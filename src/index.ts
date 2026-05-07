@@ -17,7 +17,7 @@ import { AppDatabase } from "./db.js";
 import { GitManager } from "./git.js";
 import { TaskProgressService } from "./progress/TaskProgressService.js";
 import { ProjectStore, TaskStore } from "./stores.js";
-import { TaskControlPanelService } from "./taskControlPanel.js";
+import { TaskControlPanelService } from "./discord/taskControls/TaskControlPanelService.js";
 import { taskDisplayNumber, taskLabel } from "./taskLabels.js";
 import { TaskMessagePump } from "./taskMessagePump.js";
 import { detectThreadShortcut, isClosedTaskStatus, isMessageInThread } from "./threadRouting.js";
@@ -60,6 +60,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (interaction.isStringSelectMenu()) {
       if (await controlPanel.handleSelectMenu(interaction)) {
+        return;
+      }
+    }
+
+    if (interaction.isModalSubmit()) {
+      if (await controlPanel.handleModalSubmit(interaction)) {
         return;
       }
     }
