@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   codex_thread_id TEXT,
   live_status_message_id TEXT,
   control_panel_message_id TEXT,
+  pull_request_url TEXT,
   final_summary TEXT,
   error TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,

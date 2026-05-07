@@ -135,6 +135,26 @@ export class GitManager {
     return stat.trim() || `${changed.length} changed file(s).`;
   }
 
+  async createTaskPullRequest(task: Task, title: string, body: string): Promise<string> {
+    const worktreePath = requireWorktree(task);
+    const taskBranch = requireBranch(task);
+    const baseBranch = task.baseBranch ?? "main";
+    await this.git(["push", "-u", "origin", `HEAD:${taskBranch}`], worktreePath);
+
+    const existing = await this.gh(["pr", "view", taskBranch, "--json", "url", "--jq", ".url"], worktreePath, {
+      allowFailure: true,
+    });
+    if (existing.exitCode === 0 && String(existing.stdout ?? "").trim()) {
+      return String(existing.stdout).trim();
+    }
+
+    const created = await this.gh(
+      ["pr", "create", "--base", baseBranch, "--head", taskBranch, "--title", title, "--body", body],
+      worktreePath,
+    );
+    return String(created.stdout ?? "").trim();
+  }
+
   async getDiffStat(task: Task): Promise<string> {
     const worktreePath = requireWorktree(task);
     await this.removeCodexTempDir(worktreePath);
@@ -219,6 +239,14 @@ export class GitManager {
     const result = await execa("git", args, { cwd, reject: false, all: true });
     if (!options.allowFailure && result.exitCode !== 0) {
       throw new Error(`git ${args.join(" ")} failed: ${String(result.all ?? result.stderr)}`);
+    }
+    return result;
+  }
+
+  private async gh(args: string[], cwd: string, options: { allowFailure?: boolean } = {}) {
+    const result = await execa("gh", args, { cwd, reject: false, all: true });
+    if (!options.allowFailure && result.exitCode !== 0) {
+      throw new Error(`gh ${args.join(" ")} failed: ${String(result.all ?? result.stderr)}`);
     }
     return result;
   }

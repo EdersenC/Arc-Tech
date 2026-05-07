@@ -315,7 +315,8 @@ Mode: ${task.mode}
 Model: ${task.model}
 Effort: ${task.effort}
 Sandbox: ${task.sandbox}
-Merge: ${task.mergeStatus}`;
+Merge: ${task.mergeStatus}
+PR: ${task.pullRequestUrl ?? "none"}`;
   }
 }
 

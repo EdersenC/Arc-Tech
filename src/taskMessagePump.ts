@@ -128,27 +128,65 @@ export class TaskMessagePump {
         }
 
         const diffStat = await this.git.commitTaskChanges(task, `Codex task ${taskDisplayNumber(task)} follow-up`);
+        const pullRequestUrl = await this.createPullRequestIfPossible(task, result.finalSummary, diffStat);
         this.tasks.updateMessagesStatus(queued.map((message) => message.id), "processed");
         task = this.tasks.update(task.id, {
           status: "WAITING_REVIEW",
           codexThreadId: result.codexThreadId ?? task.codexThreadId,
-          finalSummary: `${result.finalSummary}\n\nDiff stat:\n${diffStat}`,
+          pullRequestUrl,
+          finalSummary: `${result.finalSummary}${pullRequestUrl ? `\n\nPull request: ${pullRequestUrl}` : ""}\n\nDiff stat:\n${diffStat}`,
           error: null,
         });
         await this.notifyTaskUpdated(task);
         console.log("Completed follow-up Codex run.", { taskId });
-        await this.progress.postCompletion(task, result.finalSummary, diffStat, result.usageSummary);
+        await this.progress.postCompletion(
+          task,
+          `${result.finalSummary}${pullRequestUrl ? `\n\nPull request: ${pullRequestUrl}` : ""}`,
+          diffStat,
+          result.usageSummary,
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        this.tasks.updateMessagesStatus(queued.map((queuedMessage) => queuedMessage.id), "failed");
-        task = this.tasks.update(task.id, { status: abortController.signal.aborted ? "CANCELED" : "FAILED", error: message });
-        await this.notifyTaskUpdated(task);
-        console.error("Failed follow-up Codex run.", { taskId, error: message });
         const codexErrors = this.tasks
           .getRecentCodexEvents(task.id, ["error", "turn.failed"], 5)
           .map((event) => event.payloadJson)
           .join("\n");
         const stderr = error instanceof CodexProcessError ? error.stderrTail.join("\n") : "";
+
+        if (!abortController.signal.aborted && looksLikeGitMetadataBlocked([message, stderr, codexErrors].join("\n"))) {
+          try {
+            const diffStat = await this.git.commitTaskChanges(task, `Codex task ${taskDisplayNumber(task)} follow-up`);
+            if (diffStat !== "No file changes.") {
+              const recoverySummary =
+                "Codex hit a sandboxed Git metadata write while trying to commit or push, but the orchestrator committed the file changes outside the sandbox.";
+              const pullRequestUrl = await this.createPullRequestIfPossible(task, recoverySummary, diffStat);
+              this.tasks.updateMessagesStatus(queued.map((queuedMessage) => queuedMessage.id), "processed");
+              task = this.tasks.update(task.id, {
+                status: "WAITING_REVIEW",
+                pullRequestUrl,
+                finalSummary: `${recoverySummary}${pullRequestUrl ? `\n\nPull request: ${pullRequestUrl}` : ""}\n\nDiff stat:\n${diffStat}`,
+                error: null,
+              });
+              await this.notifyTaskUpdated(task);
+              await this.progress.postCompletion(
+                task,
+                `${recoverySummary}${pullRequestUrl ? `\n\nPull request: ${pullRequestUrl}` : ""}`,
+                diffStat,
+              );
+              return;
+            }
+          } catch (commitError) {
+            console.error("Failed to recover changes after git metadata sandbox error.", {
+              taskId,
+              error: commitError instanceof Error ? commitError.message : String(commitError),
+            });
+          }
+        }
+
+        this.tasks.updateMessagesStatus(queued.map((queuedMessage) => queuedMessage.id), "failed");
+        task = this.tasks.update(task.id, { status: abortController.signal.aborted ? "CANCELED" : "FAILED", error: message });
+        await this.notifyTaskUpdated(task);
+        console.error("Failed follow-up Codex run.", { taskId, error: message });
         if (stderr || codexErrors) {
           await this.progress.postProcessFailure(task, stderr, codexErrors);
         } else {
@@ -174,6 +212,29 @@ export class TaskMessagePump {
   private async notifyTaskUpdated(task: Task): Promise<void> {
     await Promise.resolve(this.taskUpdateListener?.(task));
   }
+
+  private async createPullRequestIfPossible(task: Task, finalSummary: string, diffStat: string): Promise<string | null> {
+    if (diffStat === "No file changes.") {
+      return null;
+    }
+    const project = this.projects.getById(task.projectId);
+    if (!project || project.remoteStatus !== "configured") {
+      return null;
+    }
+
+    try {
+      return await this.git.createTaskPullRequest(
+        task,
+        `Codex task ${taskDisplayNumber(task)}: ${oneLine(task.prompt, 72)}`,
+        prBody(task, finalSummary, diffStat),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("Failed to create pull request.", { taskId: task.id, error: message });
+      await this.progress.postError(task, `Task changes were committed locally, but PR creation failed:\n${message}`);
+      return null;
+    }
+  }
 }
 
 function buildInitialPrompt(task: Task, messages: TaskMessage[]): string {
@@ -192,7 +253,14 @@ ${userMessages}
 
 ${modeInstruction(task.mode)}
 
-Modify only this isolated task worktree. Stay on the current branch. Do not merge to main.`;
+Modify only this isolated task worktree. Stay on the current branch.
+
+Git rules:
+- Do not run git add, git commit, git push, git pull, git fetch, git checkout, git branch, git merge, git rebase, or git worktree.
+- The Discord orchestrator owns all Git metadata operations after your run.
+- You only own file edits inside this task worktree.
+- If you inspect Git state, use read-only commands only, such as git diff --stat or git status --short.
+- If a Git command fails because .git metadata is read-only, do not treat that as a blocker. Continue with file edits and summarize the changed files.`;
 }
 
 function modeInstruction(mode: Task["mode"]): string {
@@ -223,4 +291,28 @@ function looksLikeSandboxBlocked(summary: string): boolean {
   return /sandbox failure|bubblewrap|bwrap|synthetic bubblewrap mount registry lock|permission denied|couldn'?t modify files|could not modify files/i.test(
     summary,
   );
+}
+
+function looksLikeGitMetadataBlocked(output: string): boolean {
+  return /(\.git\/worktrees|index\.lock|Unable to create.*lock|read-only file system|git metadata)/i.test(output);
+}
+
+function prBody(task: Task, finalSummary: string, diffStat: string): string {
+  return `## Summary
+${finalSummary.trim() || "Codex completed this task."}
+
+## Task
+${task.prompt}
+
+## Diff stat
+\`\`\`
+${diffStat}
+\`\`\`
+
+Generated by Discord Codex Runner for task ${taskLabel(task)}.`;
+}
+
+function oneLine(value: string, max: number): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  return compact.length <= max ? compact : `${compact.slice(0, max - 3)}...`;
 }

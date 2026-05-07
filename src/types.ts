@@ -58,6 +58,7 @@ export interface Task {
   codexThreadId: string | null;
   liveStatusMessageId: string | null;
   controlPanelMessageId: string | null;
+  pullRequestUrl: string | null;
   finalSummary: string | null;
   error: string | null;
   createdAt: string;

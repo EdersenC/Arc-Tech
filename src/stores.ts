@@ -51,6 +51,7 @@ type TaskRow = {
   codex_thread_id: string | null;
   live_status_message_id: string | null;
   control_panel_message_id: string | null;
+  pull_request_url: string | null;
   final_summary: string | null;
   error: string | null;
   created_at: string;
@@ -266,6 +267,7 @@ export class TaskStore {
         | "codexThreadId"
         | "liveStatusMessageId"
         | "controlPanelMessageId"
+        | "pullRequestUrl"
         | "finalSummary"
         | "error"
         | "model"
@@ -285,6 +287,7 @@ export class TaskStore {
       codexThreadId: "codex_thread_id",
       liveStatusMessageId: "live_status_message_id",
       controlPanelMessageId: "control_panel_message_id",
+      pullRequestUrl: "pull_request_url",
       finalSummary: "final_summary",
       error: "error",
       model: "model",
@@ -436,6 +439,7 @@ function mapTask(row: TaskRow): Task {
     codexThreadId: row.codex_thread_id,
     liveStatusMessageId: row.live_status_message_id,
     controlPanelMessageId: row.control_panel_message_id,
+    pullRequestUrl: row.pull_request_url,
     finalSummary: row.final_summary,
     error: row.error,
     createdAt: row.created_at,

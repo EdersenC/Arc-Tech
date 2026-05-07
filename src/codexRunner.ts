@@ -104,6 +104,7 @@ export class CodexCliRunner implements CodexRunner {
           TMP: codexTempDir,
           TEMP: codexTempDir,
           XDG_RUNTIME_DIR: codexTempDir,
+          GIT_OPTIONAL_LOCKS: "0",
         },
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -206,5 +207,12 @@ ${options.previousSummary ?? "No prior summary was captured."}
 Queued user follow-up messages, in order:
 ${messages}
 
-Continue modifying the same isolated task worktree. Stay on the current branch. Do not merge to main.`;
+Continue modifying the same isolated task worktree. Stay on the current branch.
+
+Git rules:
+- Do not run git add, git commit, git push, git pull, git fetch, git checkout, git branch, git merge, git rebase, or git worktree.
+- The Discord orchestrator owns all Git metadata operations after your run.
+- You only own file edits inside this task worktree.
+- If you inspect Git state, use read-only commands only, such as git diff --stat or git status --short.
+- If a Git command fails because .git metadata is read-only, do not treat that as a blocker. Continue with file edits and summarize the changed files.`;
 }

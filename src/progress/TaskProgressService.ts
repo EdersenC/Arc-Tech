@@ -88,6 +88,7 @@ export class TaskProgressService {
       task,
       `Task ${taskLabel(task)} complete
 Branch: ${task.taskBranch ?? "unknown"}
+Pull request: ${task.pullRequestUrl ?? "none"}
 Changed files: ${changedCount}
 Diff stat:
 ${truncate(redactSecrets(diffStat || "No diff."), 900)}

@@ -37,6 +37,7 @@ export class AppDatabase {
       ["codex_thread_id", "TEXT"],
       ["live_status_message_id", "TEXT"],
       ["control_panel_message_id", "TEXT"],
+      ["pull_request_url", "TEXT"],
       ["final_summary", "TEXT"],
       ["error", "TEXT"],
       ["requested_by", "TEXT"],
