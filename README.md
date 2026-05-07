@@ -202,6 +202,23 @@ Implementation tasks run with the task worktree as `--cd` and the base repo Git 
 
 Codex's primary completion goal for implementation tasks is to commit the task branch, push it to `origin`, open or update a GitHub PR against the base branch, and include the PR URL in its final summary. It is instructed not to merge to main or edit files in the base repo or other task worktrees.
 
+### Structured Runner Bridge
+
+Each Codex run gets a small `codex-runner` helper on `PATH`. The helper appends JSONL events to a private file in `.codex-tmp/`, and the runner polls that outbox while Codex is running. This gives the agent a basic structured way to report progress back to Discord without relying on parsing free-form command output.
+
+Supported commands:
+
+```bash
+codex-runner progress "short live-status update"
+codex-runner message "user-facing update"
+codex-runner plan "plan text"
+codex-runner error "recoverable error or blocker"
+codex-runner pr "https://github.com/owner/repo/pull/123"
+codex-runner emit custom_event --message "text" --data '{"key":"value"}'
+```
+
+The app stores these as `codex_events` with event types such as `runner_tool.progress`, updates live status for progress/custom events, posts structured messages and plans to the task thread, and records PR URLs reported through `codex-runner pr`.
+
 After Codex finishes, the orchestrator still runs a recovery/fallback path:
 
 - removes `.codex-tmp/`

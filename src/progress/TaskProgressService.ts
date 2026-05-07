@@ -71,6 +71,10 @@ export class TaskProgressService {
     await this.post(task, truncate(redactSecrets(text), 1500));
   }
 
+  async postRunnerMessage(task: Task, text: string): Promise<void> {
+    await this.post(task, truncate(redactSecrets(text), 1500));
+  }
+
   async postError(task: Task, text: string): Promise<void> {
     await this.updateLiveStatus(task, { phase: "Error", lastEventType: "error" }, true);
     await this.post(task, `Task ${taskLabel(task)} error:\n${truncate(redactSecrets(text), 1500)}`);

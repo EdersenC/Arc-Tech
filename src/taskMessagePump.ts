@@ -1,5 +1,5 @@
 import type { Client } from "discord.js";
-import { CodexProcessError, type CodexRunner } from "./codexRunner.js";
+import { CodexProcessError, runnerBridgeInstructions, type CodexRunner, type CodexRunnerToolEvent } from "./codexRunner.js";
 import type { CodexEventRouter } from "./codex/CodexEventRouter.js";
 import type { GitManager } from "./git.js";
 import type { TaskProgressService } from "./progress/TaskProgressService.js";
@@ -107,6 +107,7 @@ export class TaskMessagePump {
                 effort: task.effort,
                 signal: abortController.signal,
                 onEvent: (event) => this.routeCodexEvent(taskIdForRun, event),
+                onRunnerEvent: (event) => this.routeRunnerToolEvent(taskIdForRun, event),
                 onStderrLine: (line) => this.routeStderr(taskIdForRun, line),
               })
             : await this.runner.runTask({
@@ -120,6 +121,7 @@ export class TaskMessagePump {
                 effort: task.effort,
                 signal: abortController.signal,
                 onEvent: (event) => this.routeCodexEvent(taskIdForRun, event),
+                onRunnerEvent: (event) => this.routeRunnerToolEvent(taskIdForRun, event),
                 onStderrLine: (line) => this.routeStderr(taskIdForRun, line),
               });
 
@@ -128,7 +130,10 @@ export class TaskMessagePump {
         }
 
         const diffStat = await this.git.commitTaskChanges(task, `Codex task ${taskDisplayNumber(task)} follow-up`);
-        const pullRequestUrl = await this.createPullRequestIfPossible(task, result.finalSummary, diffStat);
+        const pullRequestUrl =
+          (await this.createPullRequestIfPossible(task, result.finalSummary, diffStat)) ??
+          this.tasks.getById(task.id)?.pullRequestUrl ??
+          task.pullRequestUrl;
         const completionSummary = buildCompletionSummary(result.finalSummary, pullRequestUrl);
         this.tasks.updateMessagesStatus(queued.map((message) => message.id), "processed");
         task = this.tasks.update(task.id, {
@@ -202,6 +207,42 @@ export class TaskMessagePump {
     await this.router.routeStderr(task, line);
   }
 
+  private async routeRunnerToolEvent(taskId: number, event: CodexRunnerToolEvent): Promise<void> {
+    let task = this.tasks.getById(taskId);
+    if (!task) return;
+
+    this.tasks.addCodexEvent(task.id, `runner_tool.${event.type}`, null, event);
+    const message = event.message ?? runnerEventText(event);
+    const lastEventType = `runner_tool.${event.type}`;
+
+    if (event.type === "progress") {
+      await this.progress.updateLiveStatus(task, { phase: "Agent update", lastEventType, currentCommand: message });
+      return;
+    }
+    if (event.type === "message") {
+      await this.progress.postRunnerMessage(task, message);
+      return;
+    }
+    if (event.type === "plan") {
+      await this.progress.postPlanUpdate(task, message);
+      return;
+    }
+    if (event.type === "error") {
+      await this.progress.postError(task, message);
+      return;
+    }
+    if (event.type === "pr") {
+      const url = extractRunnerPrUrl(event);
+      if (url) {
+        task = this.tasks.update(task.id, { pullRequestUrl: url });
+      }
+      await this.progress.updateLiveStatus(task, { phase: "Pull request reported", lastEventType, currentCommand: url ?? message }, true);
+      return;
+    }
+
+    await this.progress.updateLiveStatus(task, { lastEventType, currentCommand: message });
+  }
+
   private async notifyTaskUpdated(task: Task): Promise<void> {
     await Promise.resolve(this.taskUpdateListener?.(task));
   }
@@ -245,6 +286,8 @@ Queued user messages:
 ${userMessages}
 
 ${modeInstruction(task.mode)}
+
+${runnerBridgeInstructions()}
 
 Modify only this isolated task worktree. Stay on the current task branch.
 
@@ -293,6 +336,23 @@ function looksLikeSandboxBlocked(summary: string): boolean {
 
 function looksLikeGitMetadataBlocked(output: string): boolean {
   return /(\.git\/worktrees|index\.lock|Unable to create.*lock|read-only file system|git metadata)/i.test(output);
+}
+
+function runnerEventText(event: CodexRunnerToolEvent): string {
+  return JSON.stringify({ type: event.type, data: event.data }).slice(0, 1500);
+}
+
+function extractRunnerPrUrl(event: CodexRunnerToolEvent): string | null {
+  const fromData = event.data?.url;
+  if (typeof fromData === "string" && isPullRequestUrl(fromData)) {
+    return fromData;
+  }
+  const match = /(https:\/\/github\.com\/[^\s]+\/pull\/\d+)/i.exec(event.message ?? "");
+  return match?.[1] ?? null;
+}
+
+function isPullRequestUrl(value: string): boolean {
+  return /^https:\/\/github\.com\/[^\s]+\/pull\/\d+$/i.test(value.trim());
 }
 
 function prBody(task: Task, finalSummary: string, diffStat: string): string {
