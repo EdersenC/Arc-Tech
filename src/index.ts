@@ -14,7 +14,9 @@ import { CodexCliRunner } from "./codexRunner.js";
 import { CodexEventRouter } from "./codex/CodexEventRouter.js";
 import { config } from "./config.js";
 import { AppDatabase } from "./db.js";
+import { WorktreesCommand } from "./discord/commands/worktrees.js";
 import { GitManager } from "./git.js";
+import { GitCleanupService } from "./git/GitCleanupService.js";
 import { TaskProgressService } from "./progress/TaskProgressService.js";
 import { ProjectStore, TaskStore } from "./stores.js";
 import { TaskControlPanelService } from "./taskControlPanel.js";
@@ -27,6 +29,7 @@ const database = new AppDatabase(config.databasePath);
 const projects = new ProjectStore(database.db, config.workspacesDir);
 const tasks = new TaskStore(database.db);
 const git = new GitManager();
+const gitCleanup = new GitCleanupService(database.db);
 const runner = new CodexCliRunner(config.codexBin);
 const gatewayIntents = [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages];
 if (config.enableMessageContentIntent) {
@@ -43,6 +46,7 @@ const progress = new TaskProgressService(client, tasks);
 const codexEventRouter = new CodexEventRouter(tasks, progress);
 const pump = new TaskMessagePump(client, projects, tasks, git, runner, codexEventRouter, progress);
 const controlPanel = new TaskControlPanelService(client, tasks, projects, git, pump);
+const worktreesCommand = new WorktreesCommand(projects, gitCleanup);
 pump.onTaskUpdated((task) => controlPanel.updateControlPanel(task));
 
 client.once(Events.ClientReady, (readyClient) => {
@@ -53,6 +57,9 @@ client.once(Events.ClientReady, (readyClient) => {
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (interaction.isButton()) {
+      if (await worktreesCommand.handleButton(interaction)) {
+        return;
+      }
       if (await controlPanel.handleButton(interaction)) {
         return;
       }
@@ -88,6 +95,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (interaction.commandName === "status") {
       await handleStatus(interaction);
+      return;
+    }
+
+    if (interaction.commandName === "worktrees") {
+      await worktreesCommand.handleCommand(interaction);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
