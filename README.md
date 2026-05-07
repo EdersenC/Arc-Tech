@@ -12,13 +12,7 @@ TypeScript Discord Gateway bot that creates a task thread with `/implement`, sto
 
 ## Environment
 
-Create `.env`:
-
-```bash
-cp .env.example .env
-```
-
-Fill in:
+Create `.env` in the repo root:
 
 ```dotenv
 DISCORD_TOKEN=
@@ -31,6 +25,19 @@ ENABLE_MESSAGE_CONTENT_INTENT=false
 ```
 
 `DISCORD_GUILD_ID` is required because commands are registered as guild commands.
+
+## Codebase Map
+
+The runtime is intentionally small and centered on the Discord Gateway client in `src/index.ts`.
+
+- `src/commands.ts` and `src/register-commands.ts` define and register the guild slash commands.
+- `src/config.ts` loads environment variables with `dotenv` and resolves the SQLite database and workspace paths.
+- `src/db.ts`, `schema.sql`, and `src/stores.ts` own the SQLite schema, lightweight migrations, and project/task/message persistence.
+- `src/git.ts` manages project repositories, task worktrees, task commits, branch pushes, PR creation, merge, and cleanup.
+- `src/taskControlPanel.ts` renders and handles the Discord buttons and select menus for each task.
+- `src/taskMessagePump.ts` serializes queued task-thread messages into Codex runs and records completion/failure state.
+- `src/codexRunner.ts` shells out to `codex exec --json`; `src/codex/*` parses and routes the JSONL event stream.
+- `src/progress/TaskProgressService.ts` keeps the live status message updated and posts major task events back to Discord.
 
 ## Discord Setup
 
@@ -114,6 +121,17 @@ skip
 ```
 
 A valid URL configures `origin`, fetches the remote, checks out the remote default branch into the project base repo, and then creates the task worktree/branch from that pulled base. `skip` marks the project local-only and creates the task worktree from the local empty base. After either choice, press **Start** in the task control panel.
+
+## Data and Workspace Layout
+
+The bot keeps durable state in SQLite at `DATABASE_PATH`. The schema contains:
+
+- `projects`: one row per Discord guild/channel project, including the base repo path, worktrees path, and remote state.
+- `tasks`: one row per implementation task, including the visible project-local task number, branch/worktree paths, selected model/effort/mode/sandbox, PR URL, and final summary.
+- `task_messages`: queued, processing, processed, and failed user messages for each task thread.
+- `codex_events`: raw parsed Codex JSONL events used for live progress and diagnostics.
+
+Project files live under `WORKSPACES_DIR/<guild>/<project-slug>-<channel-id>/` with a `repo/` base checkout and isolated task worktrees in `worktrees/task-<n>/`. Task branches use `codex/task-<n>`, where `<n>` is the project-local task number shown in Discord.
 
 ## Task Controls
 
