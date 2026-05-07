@@ -74,7 +74,10 @@ export class CodexCliRunner implements CodexRunner {
   }
 
   private async run(
-    options: Pick<CodexRunOptions, "worktreePath" | "sandbox" | "model" | "effort" | "signal" | "onEvent" | "onStderrLine">,
+    options: Pick<
+      CodexRunOptions,
+      "projectPath" | "worktreePath" | "sandbox" | "model" | "effort" | "signal" | "onEvent" | "onStderrLine"
+    >,
     prompt: string,
   ): Promise<CodexRunResult> {
     const codexTempDir = await prepareCodexTempDir(options.worktreePath);
@@ -82,6 +85,7 @@ export class CodexCliRunner implements CodexRunner {
       "exec",
       "--cd",
       options.worktreePath,
+      ...workspaceWriteGitArgs(options),
       "--json",
       "--sandbox",
       options.sandbox,
@@ -182,6 +186,18 @@ async function prepareCodexTempDir(worktreePath: string): Promise<string> {
   return dir;
 }
 
+function workspaceWriteGitArgs(options: Pick<CodexRunOptions, "projectPath" | "sandbox">): string[] {
+  if (options.sandbox !== "workspace-write") {
+    return [];
+  }
+  return [
+    "--add-dir",
+    path.join(options.projectPath, ".git"),
+    "-c",
+    "sandbox_workspace_write.network_access=true",
+  ];
+}
+
 function extractUsageSummary(payload: Record<string, unknown>): string | undefined {
   const usage = payload.usage;
   if (!usage || typeof usage !== "object") {
@@ -207,12 +223,12 @@ ${options.previousSummary ?? "No prior summary was captured."}
 Queued user follow-up messages, in order:
 ${messages}
 
-Continue modifying the same isolated task worktree. Stay on the current branch.
+Continue modifying the same isolated task worktree. Stay on the current task branch.
 
 Git rules:
-- Do not run git add, git commit, git push, git pull, git fetch, git checkout, git branch, git merge, git rebase, or git worktree.
-- The Discord orchestrator owns all Git metadata operations after your run.
-- You only own file edits inside this task worktree.
-- If you inspect Git state, use read-only commands only, such as git diff --stat or git status --short.
-- If a Git command fails because .git metadata is read-only, do not treat that as a blocker. Continue with file edits and summarize the changed files.`;
+- You may run git add, git commit, git push, and gh pr create for the current task branch.
+- Do not merge to main.
+- Do not checkout another branch unless you return to the current task branch before editing.
+- Do not edit files in the base repo or in other task worktrees.
+- If git push, gh, or network access fails, keep the local file changes and summarize the failure. The Discord orchestrator will try to commit, push, and create the PR after your run.`;
 }

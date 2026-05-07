@@ -253,14 +253,14 @@ ${userMessages}
 
 ${modeInstruction(task.mode)}
 
-Modify only this isolated task worktree. Stay on the current branch.
+Modify only this isolated task worktree. Stay on the current task branch.
 
 Git rules:
-- Do not run git add, git commit, git push, git pull, git fetch, git checkout, git branch, git merge, git rebase, or git worktree.
-- The Discord orchestrator owns all Git metadata operations after your run.
-- You only own file edits inside this task worktree.
-- If you inspect Git state, use read-only commands only, such as git diff --stat or git status --short.
-- If a Git command fails because .git metadata is read-only, do not treat that as a blocker. Continue with file edits and summarize the changed files.`;
+- You may run git add, git commit, git push, and gh pr create for the current task branch.
+- Do not merge to main.
+- Do not checkout another branch unless you return to the current task branch before editing.
+- Do not edit files in the base repo or in other task worktrees.
+- If git push, gh, or network access fails, keep the local file changes and summarize the failure. The Discord orchestrator will try to commit, push, and create the PR after your run.`;
 }
 
 function modeInstruction(mode: Task["mode"]): string {

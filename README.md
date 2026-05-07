@@ -180,14 +180,15 @@ For MVP continuation, the app runs a new `codex exec` in the same task worktree 
 
 Each Codex process gets a private writable temp directory at `.codex-tmp/` inside the task worktree. The runner exports `TMPDIR`, `TMP`, `TEMP`, and `XDG_RUNTIME_DIR` to that path so Codex/bubblewrap does not depend on a shared `/tmp` lock directory. `.codex-tmp/` is excluded from task commits.
 
-Codex is instructed not to run Git write operations such as `git add`, `git commit`, `git push`, `git checkout`, or `git merge` from inside its sandbox. Git worktree metadata lives outside the task worktree, so the Discord orchestrator owns all Git metadata work after Codex exits.
+Implementation tasks run with the task worktree as `--cd` and the base repo Git metadata directory added with `--add-dir <projectRepo>/.git`. This keeps file edits scoped to the task worktree while allowing Git commands in that worktree to update their real worktree metadata. The runner also enables workspace-write network access so Codex can run `git push` and `gh pr create` from the task branch without using `--dangerously-bypass-approvals-and-sandbox`.
 
-After Codex finishes, the orchestrator:
+Codex is allowed to commit, push, and create a PR for the current task branch. It is instructed not to merge to main or edit files in the base repo or other task worktrees.
+
+After Codex finishes, the orchestrator still runs a recovery/fallback path:
 
 - removes `.codex-tmp/`
-- runs `git add`
-- commits task changes on the task branch
-- pushes the task branch when the project has a configured `origin`
+- commits any remaining uncommitted task changes
+- pushes the task branch when needed
 - creates or reuses a GitHub pull request with `gh`
 - posts the PR link in the task thread
 

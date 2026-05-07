@@ -123,16 +123,17 @@ export class GitManager {
     const worktreePath = requireWorktree(task);
     await this.removeCodexTempDir(worktreePath);
     const changed = await this.changedFiles(worktreePath);
-    if (changed.length === 0) {
-      return "No file changes.";
+    if (changed.length > 0) {
+      await this.git(["add", "-A"], worktreePath);
+      const cachedStat = await this.gitOutput(["diff", "--cached", "--stat", "HEAD"], worktreePath, { allowFailure: true });
+      if (cachedStat.trim()) {
+        await this.git(["commit", "-m", message], worktreePath);
+      }
     }
-    await this.git(["add", "-A"], worktreePath);
-    const stat = await this.gitOutput(["diff", "--cached", "--stat", "HEAD"], worktreePath, { allowFailure: true });
-    if (!stat.trim()) {
-      return "No file changes.";
-    }
-    await this.git(["commit", "-m", message], worktreePath);
-    return stat.trim() || `${changed.length} changed file(s).`;
+
+    const baseBranch = task.baseBranch ?? "main";
+    const branchStat = await this.gitOutput(["diff", "--stat", `${baseBranch}...HEAD`], worktreePath, { allowFailure: true });
+    return branchStat.trim() || "No file changes.";
   }
 
   async createTaskPullRequest(task: Task, title: string, body: string): Promise<string> {
