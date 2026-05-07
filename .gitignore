@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+data/
+workspaces/
+workspaces/**
+.codex-tmp/
+npm-debug.log*
