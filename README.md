@@ -177,6 +177,7 @@ Thread shortcuts:
 - `status` posts task status, branch, and worktree.
 - `diff` posts git diff stat.
 - `stop` or `cancel` cancels queued/running Codex work for that task.
+- Prefix variants are also accepted: `/status`, `!diff`, `.cancel`.
 
 Closed tasks with status `CANCELED`, `FAILED`, `MERGED`, or `ABANDONED` reject new chat follow-ups.
 

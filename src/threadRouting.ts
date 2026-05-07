@@ -13,9 +13,10 @@ export function taskIdForThread(threadId: string, lookup: (threadId: string) => 
 
 export function detectThreadShortcut(content: string): ThreadShortcut {
   const normalized = content.trim().toLowerCase();
-  if (normalized === "status") return "status";
-  if (normalized === "diff") return "diff";
-  if (normalized === "stop" || normalized === "cancel") return "cancel";
+  const command = normalized.replace(/^[!/.]+/, "");
+  if (command === "status") return "status";
+  if (command === "diff") return "diff";
+  if (command === "stop" || command === "cancel") return "cancel";
   return null;
 }
 
