@@ -146,6 +146,7 @@ export class GitManager {
       allowFailure: true,
     });
     if (existing.exitCode === 0 && String(existing.stdout ?? "").trim()) {
+      await this.gh(["pr", "edit", taskBranch, "--title", title, "--body", body], worktreePath);
       return String(existing.stdout).trim();
     }
 

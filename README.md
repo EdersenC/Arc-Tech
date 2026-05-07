@@ -200,7 +200,7 @@ Each Codex process gets a private writable temp directory at `.codex-tmp/` insid
 
 Implementation tasks run with the task worktree as `--cd` and the base repo Git metadata directory added with `--add-dir <projectRepo>/.git`. This keeps file edits scoped to the task worktree while allowing Git commands in that worktree to update their real worktree metadata. The runner also enables workspace-write network access so Codex can run `git push` and `gh pr create` from the task branch without using `--dangerously-bypass-approvals-and-sandbox`.
 
-Codex is allowed to commit, push, and create a PR for the current task branch. It is instructed not to merge to main or edit files in the base repo or other task worktrees.
+Codex's primary completion goal for implementation tasks is to commit the task branch, push it to `origin`, open or update a GitHub PR against the base branch, and include the PR URL in its final summary. It is instructed not to merge to main or edit files in the base repo or other task worktrees.
 
 After Codex finishes, the orchestrator still runs a recovery/fallback path:
 
