@@ -3,6 +3,7 @@ import { CodexProcessError, runnerBridgeInstructions, type CodexRunner, type Cod
 import type { CodexEventRouter } from "./codex/CodexEventRouter.js";
 import type { GitManager } from "./git.js";
 import type { TaskProgressService } from "./progress/TaskProgressService.js";
+import { redactPayload } from "./redact.js";
 import type { ProjectStore, TaskStore } from "./stores.js";
 import { taskDisplayNumber, taskLabel } from "./taskLabels.js";
 import type { Task, TaskMessage } from "./types.js";
@@ -211,7 +212,7 @@ export class TaskMessagePump {
     let task = this.tasks.getById(taskId);
     if (!task) return;
 
-    this.tasks.addCodexEvent(task.id, `runner_tool.${event.type}`, null, event);
+    this.tasks.addCodexEvent(task.id, `runner_tool.${event.type}`, null, redactPayload(event));
     const message = event.message ?? runnerEventText(event);
     const lastEventType = `runner_tool.${event.type}`;
 
@@ -344,15 +345,23 @@ function runnerEventText(event: CodexRunnerToolEvent): string {
 
 function extractRunnerPrUrl(event: CodexRunnerToolEvent): string | null {
   const fromData = event.data?.url;
-  if (typeof fromData === "string" && isPullRequestUrl(fromData)) {
-    return fromData;
+  if (typeof fromData === "string") {
+    const url = normalizePullRequestUrl(fromData);
+    if (url && isPullRequestUrl(url)) return url;
   }
-  const match = /(https:\/\/github\.com\/[^\s]+\/pull\/\d+)/i.exec(event.message ?? "");
-  return match?.[1] ?? null;
+  const match = /https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+/i.exec(event.message ?? "");
+  if (!match) return null;
+  const url = normalizePullRequestUrl(match[0]);
+  return url && isPullRequestUrl(url) ? url : null;
 }
 
 function isPullRequestUrl(value: string): boolean {
-  return /^https:\/\/github\.com\/[^\s]+\/pull\/\d+$/i.test(value.trim());
+  return /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+$/i.test(value.trim());
+}
+
+function normalizePullRequestUrl(value: string): string | null {
+  const url = value.trim().replace(/[),.;:!?]+$/g, "");
+  return url ? url : null;
 }
 
 function prBody(task: Task, finalSummary: string, diffStat: string): string {

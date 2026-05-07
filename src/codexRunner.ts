@@ -231,7 +231,7 @@ class RunnerToolOutbox {
   private offset = 0;
   private buffer = "";
   private interval: NodeJS.Timeout | null = null;
-  private draining = false;
+  private drainPromise: Promise<void> | null = null;
 
   constructor(
     private readonly eventFile: string,
@@ -252,51 +252,63 @@ class RunnerToolOutbox {
   }
 
   async drain(): Promise<void> {
-    if (this.draining) return;
-    this.draining = true;
+    if (this.drainPromise) return this.drainPromise;
+    this.drainPromise = this.drainOnce();
     try {
-      const handle = await fs.open(this.eventFile, "r").catch((error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT") return null;
-        throw error;
-      });
-      if (!handle) return;
-
-      try {
-        const stat = await handle.stat();
-        if (stat.size < this.offset) {
-          this.offset = 0;
-          this.buffer = "";
-        }
-
-        const length = stat.size - this.offset;
-        if (length <= 0) return;
-
-        const chunk = Buffer.alloc(length);
-        const { bytesRead } = await handle.read(chunk, 0, length, this.offset);
-        this.offset += bytesRead;
-        this.buffer += chunk.subarray(0, bytesRead).toString("utf8");
-      } finally {
-        await handle.close();
-      }
-
-      const lines = this.buffer.split(/\r?\n/);
-      this.buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        const event = parseRunnerToolEvent(line);
-        if (event) await Promise.resolve(this.onEvent(event));
-      }
+      await this.drainPromise;
     } finally {
-      this.draining = false;
+      this.drainPromise = null;
+    }
+  }
+
+  private async drainOnce(): Promise<void> {
+    const handle = await fs.open(this.eventFile, "r").catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (!handle) return;
+
+    try {
+      const stat = await handle.stat();
+      if (stat.size < this.offset) {
+        this.offset = 0;
+        this.buffer = "";
+      }
+
+      const length = Math.min(stat.size - this.offset, MAX_RUNNER_OUTBOX_READ_BYTES);
+      if (length <= 0) return;
+
+      const chunk = Buffer.alloc(length);
+      const { bytesRead } = await handle.read(chunk, 0, length, this.offset);
+      this.offset += bytesRead;
+      this.buffer += chunk.subarray(0, bytesRead).toString("utf8");
+    } finally {
+      await handle.close();
+    }
+
+    const lines = this.buffer.split(/\r?\n/);
+    this.buffer = lines.pop() ?? "";
+    if (this.buffer.length > MAX_RUNNER_OUTBOX_LINE_CHARS) {
+      this.buffer = "";
+    }
+    for (const line of lines) {
+      if (line.length > MAX_RUNNER_OUTBOX_LINE_CHARS) continue;
+      const event = parseRunnerToolEvent(line);
+      if (event) await Promise.resolve(this.onEvent(event));
     }
   }
 }
+
+const MAX_RUNNER_OUTBOX_READ_BYTES = 64 * 1024;
+const MAX_RUNNER_OUTBOX_LINE_CHARS = 16 * 1024;
 
 function parseRunnerToolEvent(line: string): CodexRunnerToolEvent | null {
   const trimmed = line.trim();
   if (!trimmed) return null;
 
   try {
-    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (!isRecord(parsed)) return null;
     if (parsed.version !== 1 || typeof parsed.type !== "string" || !parsed.type.trim()) {
       return null;
     }
@@ -376,7 +388,7 @@ Git rules:
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 const RUNNER_TOOL_SCRIPT = `#!/usr/bin/env node
@@ -436,7 +448,7 @@ function append(event) {
     version: 1,
     type: String(event.type || "").trim(),
     message: typeof event.message === "string" && event.message.trim() ? event.message.trim() : undefined,
-    data: event.data && typeof event.data === "object" ? event.data : undefined,
+    data: event.data && typeof event.data === "object" && !Array.isArray(event.data) ? event.data : undefined,
     createdAt: new Date().toISOString(),
   };
   if (!payload.type) fail("Event type is required.");
