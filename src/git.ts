@@ -136,11 +136,17 @@ export class GitManager {
     return branchStat.trim() || "No file changes.";
   }
 
-  async createTaskPullRequest(task: Task, title: string, body: string): Promise<string> {
+  async createTaskPullRequest(
+    task: Task,
+    title: string,
+    body: string,
+    options: { remote?: string; baseBranch?: string } = {},
+  ): Promise<string> {
     const worktreePath = requireWorktree(task);
     const taskBranch = requireBranch(task);
-    const baseBranch = task.baseBranch ?? "main";
-    await this.git(["push", "-u", "origin", `HEAD:${taskBranch}`], worktreePath);
+    const baseBranch = task.baseBranch ?? options.baseBranch ?? "main";
+    const remote = options.remote ?? "origin";
+    await this.git(["push", "-u", remote, `HEAD:${taskBranch}`], worktreePath);
 
     const existing = await this.gh(["pr", "view", taskBranch, "--json", "url", "--jq", ".url"], worktreePath, {
       allowFailure: true,

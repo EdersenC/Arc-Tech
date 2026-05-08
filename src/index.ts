@@ -16,7 +16,10 @@ import { CodexEventRouter } from "./codex/CodexEventRouter.js";
 import { config } from "./config.js";
 import { AppDatabase } from "./db.js";
 import { GitManager } from "./git.js";
+import { GitHubPRFeedbackService } from "./github/GitHubPRFeedbackService.js";
 import { GitHubPRService } from "./github/GitHubPRService.js";
+import { PullRequestFeedbackRepo } from "./github/PullRequestFeedbackRepo.js";
+import { PullRequestFeedbackWorker } from "./github/PullRequestFeedbackWorker.js";
 import { OrchestrationAgentSpawner } from "./orchestrations/OrchestrationAgentSpawner.js";
 import { OrchestrationControlPanel } from "./orchestrations/OrchestrationControlPanel.js";
 import { OrchestrationPlannerService } from "./orchestrations/OrchestrationPlannerService.js";
@@ -41,8 +44,10 @@ const tasks = new TaskStore(database.db);
 const orchestrations = new OrchestrationsRepo(database.db);
 const orchestrationAgents = new OrchestrationAgentsRepo(database.db);
 const orchestrationMessages = new OrchestrationMessagesRepo(database.db);
+const pullRequestFeedback = new PullRequestFeedbackRepo(database.db);
 const git = new GitManager();
 const githubPr = new GitHubPRService(git, config);
+const githubPrFeedback = new GitHubPRFeedbackService();
 const runner = new CodexCliRunner(config.codexBin);
 const taskService = new TaskService(projects, tasks, git);
 const gatewayIntents = [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages];
@@ -101,6 +106,17 @@ const orchestrationResultCollector = new OrchestrationResultCollector(
   tasks,
   (orchestrationId) => orchestrationControlPanel.updateControlPanel(orchestrationId),
 );
+const pullRequestFeedbackWorker = new PullRequestFeedbackWorker(
+  { enabled: config.githubPrFeedbackEnabled, pollMs: config.githubPrFeedbackPollMs },
+  client,
+  tasks,
+  orchestrations,
+  orchestrationAgents,
+  pullRequestFeedback,
+  githubPrFeedback,
+  pump,
+  (orchestrationId) => orchestrationControlPanel.updateControlPanel(orchestrationId),
+);
 pump.onTaskUpdated(async (task) => {
   await controlPanel.updateControlPanel(task);
   await orchestrationResultCollector.handleTaskUpdated(task);
@@ -109,6 +125,7 @@ pump.onTaskUpdated(async (task) => {
 client.once(Events.ClientReady, (readyClient) => {
   console.log(`Discord bot ready as ${readyClient.user.tag}`);
   pump.restoreQueuedWork();
+  pullRequestFeedbackWorker.start();
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -814,6 +831,7 @@ async function acknowledgeQueuedMessage(message: Message, taskId: number): Promi
 
 function shutdown(): void {
   console.log("Shutting down.");
+  pullRequestFeedbackWorker.stop();
   client.destroy();
   database.close();
   process.exit(0);

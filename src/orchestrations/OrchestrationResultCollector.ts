@@ -30,8 +30,9 @@ export class OrchestrationResultCollector {
     }
     const nextStatus = statusForTask(task);
     if (!nextStatus) {
-      if (task.status === "RUNNING" && agent.status !== "running") {
-        this.agents.updateStatus(agent.id, "running");
+      const activeStatus = activeStatusForTask(task);
+      if (activeStatus && agent.status !== activeStatus) {
+        this.agents.updateStatus(agent.id, activeStatus);
         await this.updateParentControlPanel(task.parentOrchestrationId);
       }
       return;
@@ -111,6 +112,16 @@ function statusForTask(task: Task): OrchestrationAgentStatus | null {
   }
   if (task.status === "CANCELED") {
     return "canceled";
+  }
+  return null;
+}
+
+function activeStatusForTask(task: Task): OrchestrationAgentStatus | null {
+  if (task.status === "QUEUED") {
+    return "queued";
+  }
+  if (task.status === "RUNNING") {
+    return "running";
   }
   return null;
 }

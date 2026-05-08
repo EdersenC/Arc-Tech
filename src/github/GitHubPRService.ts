@@ -5,7 +5,7 @@ import type { Task } from "../types.js";
 export class GitHubPRService {
   constructor(
     private readonly git: GitManager,
-    private readonly config: Pick<AppConfig, "githubPrEnabled">,
+    private readonly config: Pick<AppConfig, "githubPrEnabled" | "githubBaseBranch" | "githubRemote">,
   ) {}
 
   isEnabled(): boolean {
@@ -16,7 +16,10 @@ export class GitHubPRService {
     if (!this.isEnabled()) {
       return null;
     }
-    return this.git.createTaskPullRequest(task, title, body);
+    return this.git.createTaskPullRequest(task, title, body, {
+      baseBranch: this.config.githubBaseBranch,
+      remote: this.config.githubRemote,
+    });
   }
 
   getPrUrlForBranch(task: Task): string | null {

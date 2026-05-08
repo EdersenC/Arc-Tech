@@ -119,6 +119,49 @@ export class AppDatabase {
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
       CREATE INDEX IF NOT EXISTS idx_orchestration_messages_orchestration ON orchestration_messages(orchestration_id, created_at);
+      CREATE TABLE IF NOT EXISTS tracked_pull_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        parent_orchestration_id INTEGER,
+        orchestration_agent_id INTEGER,
+        pr_url TEXT NOT NULL,
+        owner TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        number INTEGER NOT NULL,
+        branch_name TEXT,
+        state TEXT NOT NULL DEFAULT 'open',
+        last_polled_at TEXT,
+        last_error TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        closed_at TEXT,
+        UNIQUE (owner, repo, number),
+        UNIQUE (task_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_tracked_pull_requests_state ON tracked_pull_requests(state, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_tracked_pull_requests_project ON tracked_pull_requests(project_id, state);
+      CREATE TABLE IF NOT EXISTS pull_request_feedback_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tracked_pr_id INTEGER NOT NULL REFERENCES tracked_pull_requests(id) ON DELETE CASCADE,
+        task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        external_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        author TEXT,
+        body TEXT NOT NULL,
+        html_url TEXT,
+        path TEXT,
+        line INTEGER,
+        review_state TEXT,
+        github_created_at TEXT,
+        github_updated_at TEXT,
+        delivered_task_message_id INTEGER REFERENCES task_messages(id) ON DELETE SET NULL,
+        delivered_at TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (tracked_pr_id, external_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_pull_request_feedback_events_task ON pull_request_feedback_events(task_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_pull_request_feedback_events_delivery ON pull_request_feedback_events(delivered_at);
       CREATE TABLE IF NOT EXISTS codex_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,

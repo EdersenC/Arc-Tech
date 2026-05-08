@@ -33,7 +33,7 @@ export class OrchestrationsRepo {
     authorUserId: string;
     goal: string;
     plannerModel?: string | null;
-    plannerEffort?: Effort | null;
+    plannerEffort?: Effort;
     minAgents?: number;
     maxAgents?: number;
     autoStartChildren?: boolean;

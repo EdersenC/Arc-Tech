@@ -12,6 +12,8 @@ export const config = {
   codexBin: process.env.CODEX_BIN || "codex",
   enableMessageContentIntent: booleanEnv("ENABLE_MESSAGE_CONTENT_INTENT", false),
   githubPrEnabled: booleanEnv("GITHUB_PR_ENABLED", false),
+  githubPrFeedbackEnabled: booleanEnv("GITHUB_PR_FEEDBACK_ENABLED", booleanEnv("GITHUB_PR_ENABLED", false)),
+  githubPrFeedbackPollMs: numberEnv("GITHUB_PR_FEEDBACK_POLL_MS", 60_000),
   githubBaseBranch: process.env.GITHUB_BASE_BRANCH || "main",
   githubRemote: process.env.GITHUB_REMOTE || "origin",
 };
@@ -32,4 +34,13 @@ function booleanEnv(name: string, defaultValue: boolean): boolean {
     return defaultValue;
   }
   return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+}
+
+function numberEnv(name: string, defaultValue: number): number {
+  const value = process.env[name];
+  if (!value) {
+    return defaultValue;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
 }

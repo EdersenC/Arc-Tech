@@ -26,7 +26,7 @@ export class OrchestrationStatusRenderer {
       lines.push("", "Agents:");
       for (const agent of view.agents) {
         const task = agent.childTaskId ? this.tasks?.getById(agent.childTaskId) : null;
-        const taskText = task ? taskLabel(task) : "not created";
+        const taskText = task ? taskLabel(task) : agent.childTaskId ? `Task #${agent.childTaskId}` : "not created";
         const threadText = agent.discordThreadUrl ?? (agent.discordThreadId ? `<#${agent.discordThreadId}>` : "no thread");
         lines.push(`- #${agent.agentIndex} ${agent.agentName}: ${agent.status.toUpperCase()} - ${taskText} - ${threadText}`);
       }
