@@ -76,6 +76,15 @@ type TaskMessageRow = {
   processed_at: string | null;
 };
 
+export interface CodexActivityEvent {
+  eventType: string;
+  itemType: string | null;
+  payloadJson: string;
+  createdAt: string;
+}
+
+export type TaskMessageStatusCounts = Record<TaskMessageStatus, number>;
+
 export class ProjectStore {
   constructor(private readonly db: Database.Database, private readonly workspacesDir: string) {}
 
@@ -423,6 +432,54 @@ export class TaskStore {
       )
       .all(taskId, ...eventTypes, limit) as Array<{ event_type: string; payload_json: string; created_at: string }>;
     return rows.map((row) => ({ eventType: row.event_type, payloadJson: row.payload_json, createdAt: row.created_at }));
+  }
+
+  listRecentCodexActivity(taskId: number, limit = 12): CodexActivityEvent[] {
+    const rows = this.db
+      .prepare(
+        `
+        SELECT event_type, item_type, payload_json, created_at
+        FROM codex_events
+        WHERE task_id = ?
+        ORDER BY datetime(created_at) DESC, id DESC
+        LIMIT ?
+      `,
+      )
+      .all(taskId, Math.max(1, Math.min(50, Math.floor(limit)))) as Array<{
+      event_type: string;
+      item_type: string | null;
+      payload_json: string;
+      created_at: string;
+    }>;
+    return rows.map((row) => ({
+      eventType: row.event_type,
+      itemType: row.item_type,
+      payloadJson: row.payload_json,
+      createdAt: row.created_at,
+    }));
+  }
+
+  getTaskMessageStatusCounts(taskId: number): TaskMessageStatusCounts {
+    const counts: TaskMessageStatusCounts = {
+      queued: 0,
+      processing: 0,
+      processed: 0,
+      failed: 0,
+    };
+    const rows = this.db
+      .prepare(
+        `
+        SELECT status, COUNT(*) AS count
+        FROM task_messages
+        WHERE task_id = ?
+        GROUP BY status
+      `,
+      )
+      .all(taskId) as Array<{ status: TaskMessageStatus; count: number }>;
+    for (const row of rows) {
+      counts[row.status] = row.count;
+    }
+    return counts;
   }
 
   private getMessageById(id: number): TaskMessage | null {

@@ -35,6 +35,7 @@ export class PullRequestFeedbackWorker {
     if (!this.config.enabled || this.timer) {
       return;
     }
+    console.log("PR feedback worker started.", { pollMs: this.config.pollMs });
     void this.pollOnce().catch((error) => console.error("Initial PR feedback poll failed.", error));
     this.timer = setInterval(() => {
       void this.pollOnce().catch((error) => console.error("PR feedback poll failed.", error));
@@ -107,6 +108,11 @@ export class PullRequestFeedbackWorker {
         content: buildFeedbackPrompt(task, tracked, newEvents),
       });
       this.feedbackRepo.markEventsDelivered(newEvents.map((event) => event.id), taskMessage.id);
+      this.tasks.addCodexEvent(task.id, "pr_feedback.queued", "pull_request_feedback", {
+        prUrl: tracked.prUrl,
+        feedbackItems: newEvents.length,
+        eventIds: newEvents.map((event) => event.id),
+      });
 
       let updatedTask = task;
       if (task.status !== "QUEUED" && task.status !== "RUNNING") {
@@ -114,6 +120,7 @@ export class PullRequestFeedbackWorker {
       }
       await this.markOrchestrationActive(updatedTask);
       this.pump.enqueue(updatedTask.id);
+      await this.reactToFeedback(tracked, newEvents);
       await this.postVisibilityUpdates(updatedTask, tracked, newEvents);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -123,6 +130,24 @@ export class PullRequestFeedbackWorker {
         prUrl: tracked.prUrl,
         error: message,
       });
+    }
+  }
+
+  private async reactToFeedback(tracked: TrackedPullRequest, events: PullRequestFeedbackEvent[]): Promise<void> {
+    for (const event of events) {
+      try {
+        const status = await this.feedbackService.reactToFeedback(tracked, event, "eyes");
+        this.feedbackRepo.markReaction(event.id, status);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.feedbackRepo.markReaction(event.id, "failed", message);
+        console.warn("Failed to react to PR feedback comment.", {
+          taskId: tracked.taskId,
+          prUrl: tracked.prUrl,
+          externalId: event.externalId,
+          error: message,
+        });
+      }
     }
   }
 
@@ -188,8 +213,10 @@ Instructions:
 - Avoid unrelated refactors.
 - Do not merge the branch.
 - Run relevant tests if available.
-- Push/update the PR if GitHub access is available.
-- End with a concise summary of what changed, files changed, tests run, known risks, branch, and PR URL.`;
+- Do not run git add, git commit, git push, or gh pr create.
+- The TypeScript runner owns committing, pushing, and pull request updates after your run exits.
+- End with a concise summary of what changed, files changed, tests run, known risks, branch, PR URL, and PR title.
+- Include a line exactly like: PR title: <short descriptive title>`;
 }
 
 function formatEvent(event: PullRequestFeedbackEvent): string {

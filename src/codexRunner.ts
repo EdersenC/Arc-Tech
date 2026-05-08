@@ -76,7 +76,7 @@ export class CodexCliRunner implements CodexRunner {
   private async run(
     options: Pick<
       CodexRunOptions,
-      "projectPath" | "worktreePath" | "sandbox" | "model" | "effort" | "signal" | "onEvent" | "onStderrLine"
+      "worktreePath" | "sandbox" | "model" | "effort" | "signal" | "onEvent" | "onStderrLine"
     >,
     prompt: string,
   ): Promise<CodexRunResult> {
@@ -85,7 +85,6 @@ export class CodexCliRunner implements CodexRunner {
       "exec",
       "--cd",
       options.worktreePath,
-      ...workspaceWriteGitArgs(options),
       "--json",
       "--sandbox",
       options.sandbox,
@@ -194,18 +193,6 @@ async function prepareCodexTempDir(worktreePath: string): Promise<string> {
   return dir;
 }
 
-function workspaceWriteGitArgs(options: Pick<CodexRunOptions, "projectPath" | "sandbox">): string[] {
-  if (options.sandbox !== "workspace-write") {
-    return [];
-  }
-  return [
-    "--add-dir",
-    path.join(options.projectPath, ".git"),
-    "-c",
-    "sandbox_workspace_write.network_access=true",
-  ];
-}
-
 function extractUsageSummary(payload: Record<string, unknown>): string | undefined {
   const usage = payload.usage;
   if (!usage || typeof usage !== "object") {
@@ -234,15 +221,15 @@ ${messages}
 Continue modifying the same isolated task worktree. Stay on the current task branch.
 
 Primary completion goal:
-- Finish with a concise summary and committed task branch.
-- If GitHub access and gh are available, push the branch, open or update a pull request against the task base branch, and include its URL.
-- If PR creation is unavailable, keep the local branch/worktree and summarize the reason.
+- Finish the requested work in this isolated task worktree.
+- End with a concise summary of what changed, files changed, tests run, known risks, and a proposed pull request title.
+- Include a line exactly like: PR title: <short descriptive title>
 
 Git rules:
-- You may run git add and git commit for the current task branch when the task produced code changes.
-- You may run git push and gh pr create only if the configured remote and gh are available.
+- Do not run git add, git commit, git push, or gh pr create.
+- The TypeScript runner owns committing, pushing, and pull request creation after your run exits.
 - Do not merge to main.
 - Do not checkout another branch unless you return to the current task branch before editing.
 - Do not edit files in the base repo or in other task worktrees.
-- If git push, gh, or network access fails, keep the local file changes and summarize the failure. The Discord orchestrator will try to commit, push, and create the PR after your run.`;
+- Leave your file changes in the current worktree for the runner to collect.`;
 }

@@ -1,5 +1,10 @@
 import { execa } from "execa";
-import type { NormalizedPullRequestFeedback, PullRequestIdentity, TrackedPullRequest } from "./PullRequestFeedbackTypes.js";
+import type {
+  NormalizedPullRequestFeedback,
+  PullRequestFeedbackEvent,
+  PullRequestIdentity,
+  TrackedPullRequest,
+} from "./PullRequestFeedbackTypes.js";
 
 type GitHubUser = { login?: string | null };
 
@@ -70,6 +75,26 @@ export class GitHubPRFeedbackService {
     };
   }
 
+  async reactToFeedback(
+    tracked: TrackedPullRequest,
+    event: Pick<PullRequestFeedbackEvent, "externalId">,
+    content = "eyes",
+  ): Promise<"reacted" | "unsupported"> {
+    const endpoint = reactionEndpoint(tracked, event.externalId);
+    if (!endpoint) {
+      return "unsupported";
+    }
+    const result = await execa(
+      "gh",
+      ["api", "-X", "POST", endpoint, "-H", "Accept: application/vnd.github+json", "-f", `content=${content}`],
+      { reject: false },
+    );
+    if (result.exitCode !== 0) {
+      throw new Error(`gh api reaction failed: ${String(result.stderr || result.stdout)}`);
+    }
+    return "reacted";
+  }
+
   private async ghJson<T>(endpoint: string): Promise<T> {
     const result = await execa("gh", ["api", endpoint], { reject: false });
     if (result.exitCode !== 0) {
@@ -77,6 +102,18 @@ export class GitHubPRFeedbackService {
     }
     return JSON.parse(String(result.stdout || "null")) as T;
   }
+}
+
+function reactionEndpoint(tracked: TrackedPullRequest, externalId: string): string | null {
+  const issueComment = /^issue-comment:(\d+)$/.exec(externalId);
+  if (issueComment) {
+    return `repos/${tracked.owner}/${tracked.repo}/issues/comments/${issueComment[1]}/reactions`;
+  }
+  const reviewComment = /^review-comment:(\d+)$/.exec(externalId);
+  if (reviewComment) {
+    return `repos/${tracked.owner}/${tracked.repo}/pulls/comments/${reviewComment[1]}/reactions`;
+  }
+  return null;
 }
 
 function normalizeIssueComment(comment: IssueCommentResponse): NormalizedPullRequestFeedback {

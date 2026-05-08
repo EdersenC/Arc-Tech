@@ -143,6 +143,7 @@ AgentFleetPlan schema:
       "prompt": "string",
       "model": "optional string",
       "effort": "optional low|medium|high",
+      "prTitle": "optional short pull request title",
       "dependsOn": ["optional string"],
       "expectedFiles": ["optional string"],
       "acceptanceCriteria": ["string"]
@@ -155,6 +156,7 @@ Validation rules:
 - agentCount must be at most ${Math.min(10, orchestration.maxAgents)}
 - agentCount must equal agents.length
 - every agent needs name, role, objective, prompt, and at least one acceptance criterion
+- prTitle is optional, but when present it should describe that child agent's PR instead of copying the user command
 - make agents as independent as practical and assign different files/modules where possible
 
 Orchestration #${orchestration.id}

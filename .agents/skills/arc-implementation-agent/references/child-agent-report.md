@@ -18,6 +18,6 @@ Known risks:
 Branch:
 codex/orch-<id>/agent-<index>-<slug>
 
-PR URL:
-not created
+PR title:
+Short descriptive title for this agent's pull request
 ```

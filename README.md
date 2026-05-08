@@ -1,6 +1,6 @@
 # Discord Codex Runner
 
-TypeScript Discord Gateway bot that creates a task thread with `/implement`, stores task-thread chat in SQLite, and sends queued task messages to sandboxed non-interactive Codex runs in the task worktree.
+TypeScript Discord Gateway bot and Excalidraw command surface that create implementation tasks, store task chat/state in SQLite, and send queued messages to sandboxed non-interactive Codex runs in isolated task worktrees.
 
 ## Requirements
 
@@ -27,9 +27,19 @@ GITHUB_PR_FEEDBACK_ENABLED=false
 GITHUB_PR_FEEDBACK_POLL_MS=60000
 GITHUB_BASE_BRANCH=main
 GITHUB_REMOTE=origin
+EXCALIDRAW_HOST=127.0.0.1
+EXCALIDRAW_PORT=8787
+EXCALIDRAW_CORS_ORIGIN=http://127.0.0.1:5173,http://localhost:5173
+EXCALIDRAW_WORKSPACES_DIR=~/.arc-tech/excalidraw-workspaces
+EXCALIDRAW_PROJECT_GUILD_ID=excalidraw
+EXCALIDRAW_PROJECT_CHANNEL_ID=default
+EXCALIDRAW_PROJECT_NAME=Excalidraw
 ```
 
 `DISCORD_GUILD_ID` is required because commands are registered as guild commands.
+The Excalidraw API can run without Discord credentials by using `loadConfig({ requireDiscord: false })`.
+`EXCALIDRAW_CORS_ORIGIN` is a comma-separated allowlist. Use `*` only in a trusted local environment.
+`EXCALIDRAW_WORKSPACES_DIR` defaults outside this repo so local Codex sandbox mounts do not depend on the Arc-Tech checkout path.
 
 ## Codebase Map
 
@@ -41,10 +51,13 @@ The runtime is intentionally small and centered on the Discord Gateway client in
 - `src/git.ts` manages project repositories, task worktrees, task commits, branch pushes, PR creation, merge, and cleanup.
 - `src/taskControlPanel.ts` renders and handles the Discord buttons and select menus for each task.
 - `src/taskMessagePump.ts` serializes queued task-thread messages into Codex runs and records completion/failure state.
+- `src/tasks/ImplementService.ts` owns the shared `/implement` task creation, worktree setup, message queueing, and optional start path used by Discord and Excalidraw.
 - `src/codexRunner.ts` shells out to `codex exec --json`; `src/codex/*` parses and routes the JSONL event stream.
 - `src/progress/TaskProgressService.ts` keeps the live status message updated and posts major task events back to Discord.
 - `src/orchestrations/*` owns the reusable planner-to-agent-fleet workflow behind `/orchestrate`.
-- `src/tasks/TaskService.ts` centralizes implementation task creation so `/implement` and orchestration children use the same backend path.
+- `src/tasks/TaskService.ts` centralizes low-level implementation task rows so `/implement` and orchestration children use the same backend path.
+- `src/excalidraw/*` owns the HTTP API and persisted visual task-card state for the Excalidraw UI adapter.
+- `web/` contains the React + `@excalidraw/excalidraw` MVP canvas.
 - `src/cli/arcctl.ts` writes optional local bridge requests/events under `.codex-bridge/` for future custom UI or skill workflows.
 
 ## Discord Setup
@@ -108,6 +121,12 @@ Run compiled JavaScript:
 npm start
 ```
 
+Run the Excalidraw MVP:
+
+```bash
+npm run excalidraw
+```
+
 ## Slash Commands
 
 - `/implement msg:<text>` creates a SQLite task, creates an isolated git worktree and branch, creates a Discord task thread, stores the request, and posts task controls. Codex does not start until you press **Start**.
@@ -115,6 +134,32 @@ npm start
 - `/status` shows the current channel project, remote state, repo path, and recent tasks.
 
 Task numbers shown in Discord are local to each project/channel. A new project starts at task `#1` even though SQLite keeps a separate internal global row id for component routing.
+
+## Excalidraw MVP
+
+Excalidraw is a second UI adapter for the same implementation runner. Start it with `npm run excalidraw`, then open the Vite URL printed in the terminal. The single startup command launches both the API server and the Vite canvas UI.
+If launched with `sudo`, the Excalidraw process drops back to the original user before creating task worktrees so Codex does not inherit root-owned workspaces.
+
+The command panel accepts:
+
+```text
+/implement Add a health check endpoint to the API
+```
+
+Modes:
+
+- **Direct Agent** calls `POST /api/implement`, creates the same SQLite task/worktree/queued message path as Discord, starts the task immediately, and draws a task card on the canvas. Direct Agent requires `GITHUB_PR_ENABLED=true` plus a connected project remote so completed work can push a branch and create a PR.
+- **Plan Card Only** persists a visual planning card and does not start Codex.
+
+Use the repo panel to connect the Excalidraw project to a GitHub remote. The API exposes `GET /api/excalidraw/project` for readiness and `POST /api/excalidraw/project/remote` with `{ "remoteUrl": "https://github.com/owner/repo.git" }` to configure/fetch the repo. If PRs are disabled or no remote is connected, Direct Agent is blocked before task creation instead of silently completing local-only work without a PR.
+
+Every Arc-generated Excalidraw element includes `customData.arc` with the card id, source, command, status, task id, and latest progress when one exists. The UI polls `GET /api/tasks` every few seconds and updates card text/status from SQLite. Direct agent cards grow as runner information arrives, including phase, latest activity, PR feedback resolution state, command events, changed files, queue counts, summaries, errors, and PR links. Cards with browser-safe links, especially GitHub PR URLs, also get an Excalidraw element link so the canvas link control can open them. Moving cards persists their canvas position; deleting cards is visual-only for the MVP and never deletes the real task.
+
+The Excalidraw API intentionally does not log in to Discord and does not expose Discord tokens. Execution still flows through `ImplementService`, `TaskMessagePump`, `CodexRunner`, and `GitManager`; the canvas never runs shell commands directly.
+
+For compiled serving, `npm run build` writes the web bundle to `dist/web`; the Excalidraw API serves that directory when Vite is not in front of it.
+
+MVP limitations: only `/implement` is supported, there is no visual `/orchestrate` yet, collaboration is not enabled, and task controls such as diff/merge/cancel remain in the existing Discord task UI for now.
 
 ## Project Git Remote
 
@@ -142,6 +187,7 @@ The bot keeps durable state in SQLite at `DATABASE_PATH`. The schema contains:
 - `orchestrations`: parent planner rooms, bounds, final AgentFleetPlan JSON, and status.
 - `orchestration_agents`: child agent rows linked to visible task threads, branches, worktrees, summaries, and optional PR URLs.
 - `orchestration_messages`: parent-thread planner conversation history.
+- `excalidraw_cards`: persisted visual cards, linked task ids, canvas position, label, branch, and status for the Excalidraw UI.
 
 Project files live under `WORKSPACES_DIR/<guild>/<project-slug>-<channel-id>/` with a `repo/` base checkout and isolated task worktrees in `worktrees/task-<n>/`. Task branches use `codex/task-<n>`, where `<n>` is the project-local task number shown in Discord.
 
@@ -197,11 +243,15 @@ Bounds are clamped to a hard minimum of 2 and hard maximum of 10. Children auto-
 
 PR URLs are optional. With `GITHUB_PR_ENABLED=false`, tasks still commit locally and report branch/worktree paths. With GitHub PRs enabled and `gh` configured, the app can push task branches and create or update PRs. Missing GitHub integration does not fail an orchestration.
 
+Implementation agents can propose their own PR names by ending with `PR title: <short descriptive title>`. Orchestration planners can also include optional child-level `prTitle` values in the AgentFleetPlan. The TypeScript runner sanitizes these titles and still owns `gh pr create`/`gh pr edit`; Codex never receives GitHub control directly. If no title is proposed, the runner falls back to the task number plus a shortened command.
+
 ## PR Feedback Worker
 
 When `GITHUB_PR_FEEDBACK_ENABLED=true`, the runner polls tracked open PRs created by agent tasks. The worker uses `gh api` to read PR issue comments, review summaries, and inline review comments. New feedback is deduped in SQLite, queued as a normal task follow-up, and the owning agent task is automatically enqueued.
 
-The worker posts a short visibility update in the child task thread and parent orchestration thread when applicable. Codex receives only the task follow-up prompt in its existing worktree and branch; it does not receive Discord credentials and does not call Discord APIs.
+The worker starts in both the Discord bot and the standalone Excalidraw server. It posts a short visibility update in the child task thread and parent orchestration thread when applicable. Excalidraw cards show PR feedback as `queued`, `resolving`, or `resolved` while the same task runner handles the follow-up. Codex receives only the task follow-up prompt in its existing worktree and branch; it does not receive Discord credentials and does not call Discord APIs.
+
+When feedback is queued, the runner attempts to add an `eyes` reaction to supported GitHub issue comments and inline review comments so the reviewer can see that Arc-Tech picked it up. Review summary events are still queued for the agent, but GitHub does not expose the same reaction endpoint for every review event.
 
 Polling defaults to the PR feature flag. Set `GITHUB_PR_FEEDBACK_POLL_MS` to control the interval.
 
@@ -288,16 +338,16 @@ For MVP continuation, the app runs a new `codex exec` in the same task worktree 
 
 Each Codex process gets a private writable temp directory at `.codex-tmp/` inside the task worktree. The runner exports `TMPDIR`, `TMP`, `TEMP`, and `XDG_RUNTIME_DIR` to that path so Codex/bubblewrap does not depend on a shared `/tmp` lock directory. `.codex-tmp/` is excluded from task commits.
 
-Implementation tasks run with the task worktree as `--cd` and the base repo Git metadata directory added with `--add-dir <projectRepo>/.git`. This keeps file edits scoped to the task worktree while allowing Git commands in that worktree to update their real worktree metadata. The runner also enables workspace-write network access so Codex can run `git push` and `gh pr create` from the task branch without using `--dangerously-bypass-approvals-and-sandbox`.
+Implementation tasks run with the task worktree as `--cd`. Codex edits files only inside that isolated worktree and is instructed not to run `git add`, `git commit`, `git push`, or `gh pr create`. The TypeScript runner owns Git metadata writes and PR creation outside the Codex sandbox.
 
-Codex's primary completion goal for implementation tasks is to finish with a clear summary, committed task branch, and PR URL when PR creation is available. It is instructed not to merge to main or edit files in the base repo or other task worktrees.
+Codex's primary completion goal for implementation tasks is to finish the file changes and provide a clear summary. It is instructed not to merge to main or edit files in the base repo or other task worktrees.
 
-After Codex finishes, the orchestrator still runs a recovery/fallback path:
+After Codex finishes, the orchestrator runs the Git lifecycle path:
 
 - removes `.codex-tmp/`
 - commits any remaining uncommitted task changes
 - pushes the task branch when GitHub PR integration is enabled
-- creates or reuses a GitHub pull request with `gh` when available
+- creates or reuses a GitHub pull request with `gh` when available, using the agent-proposed PR title when provided
 - posts the PR link in the task thread when one exists
 
 ## Live Progress

@@ -34,9 +34,14 @@ import { ProjectStore, TaskStore } from "./stores.js";
 import { TaskControlPanelService } from "./taskControlPanel.js";
 import { taskDisplayNumber, taskLabel } from "./taskLabels.js";
 import { TaskMessagePump } from "./taskMessagePump.js";
+import { ImplementService } from "./tasks/ImplementService.js";
 import { TaskService } from "./tasks/TaskService.js";
 import { detectThreadShortcut, isClosedTaskStatus, isMessageInThread } from "./threadRouting.js";
 import type { Project, Task } from "./types.js";
+
+if (!config.discordToken) {
+  throw new Error("DISCORD_TOKEN is required to start the Discord bot.");
+}
 
 const database = new AppDatabase(config.databasePath);
 const projects = new ProjectStore(database.db, config.workspacesDir);
@@ -65,6 +70,7 @@ const progress = new TaskProgressService(client, tasks);
 const codexEventRouter = new CodexEventRouter(tasks, progress);
 const pump = new TaskMessagePump(client, projects, tasks, git, runner, codexEventRouter, progress, githubPr);
 const controlPanel = new TaskControlPanelService(client, tasks, projects, git, pump);
+const implementService = new ImplementService(projects, tasks, git, taskService, pump);
 const orchestrationService = new OrchestrationService(orchestrations, orchestrationAgents, orchestrationMessages);
 const planner = new OrchestrationPlannerService(orchestrations, orchestrationMessages, projects, git, runner);
 let orchestrationControlPanel: OrchestrationControlPanel;
@@ -220,29 +226,22 @@ async function handleImplement(interaction: ChatInputCommandInteraction): Promis
     channelId: projectChannel.id,
     channelName: projectChannel.name,
   });
-  project = await syncProjectOrigin(project);
-  let task = taskService.createImplementationTask({ project, prompt: msg, requestedBy: interaction.user.id });
-  if (project.remoteStatus === "configured") {
-    await git.pullProjectOrigin(project);
-  }
-  if (project.remoteStatus !== "missing") {
-    task = await createOrRefreshTaskWorktree(project, task);
-  }
+  const result = await implementService.run({
+    project,
+    prompt: msg,
+    requestedBy: interaction.user.id,
+    sourceUi: "discord",
+    startImmediately: false,
+    allowLocalOnlyWithoutRemote: false,
+  });
+  project = result.project;
+  let task = result.task;
   const taskMessage = `Task ${taskLabel(task)}\n\nRequest:\n${msg}`;
   const taskRoom = await createTaskRoom(interaction, String(taskDisplayNumber(task)), taskMessage);
 
   if (!taskRoom.ok) {
-    tasks.enqueueUserMessage({
-      taskId: task.id,
-      discordMessageId: null,
-      discordAuthorId: interaction.user.id,
-      content: msg,
-    });
-    if (project.remoteStatus === "missing") {
-      tasks.update(task.id, { status: "WAITING_REMOTE" });
-    } else {
-      tasks.update(task.id, { status: "QUEUED" });
-      pump.enqueue(task.id);
+    if (!result.remoteRequired) {
+      task = await implementService.startTask(project, task);
     }
     await interaction.editReply(truncate(`Created task ${taskLabel(task)}, but could not create a task thread.\n\n${taskRoom.error}`, 1900));
     return;
@@ -260,15 +259,9 @@ async function handleImplement(interaction: ChatInputCommandInteraction): Promis
         channelTypeName: channelTypeName(taskRoom.thread.type),
         error,
       });
-      const queued = tasks.enqueueUserMessage({
-        taskId: task.id,
-        discordMessageId: null,
-        discordAuthorId: interaction.user.id,
-        content: msg,
-      });
-      console.log("Queued initial task message after thread send failure.", { taskId: task.id, queuedMessageId: queued.id });
-      tasks.update(task.id, { status: "QUEUED" });
-      pump.enqueue(task.id);
+      if (project.remoteStatus !== "missing") {
+        task = await implementService.startTask(project, task);
+      }
       await interaction.editReply(
         truncate(
           `Created task ${taskLabel(task)} in <#${taskRoom.thread.id}>, but could not send the task message.\n\n${formatDiscordError(
@@ -281,16 +274,7 @@ async function handleImplement(interaction: ChatInputCommandInteraction): Promis
     }
   }
 
-  const queued = tasks.enqueueUserMessage({
-    taskId: task.id,
-    discordMessageId: null,
-    discordAuthorId: interaction.user.id,
-    content: msg,
-  });
-  console.log("Queued initial task message.", { taskId: task.id, queuedMessageId: queued.id });
-  if (project.remoteStatus === "missing") {
-    task = tasks.update(task.id, { status: "WAITING_REMOTE" });
-  }
+  console.log("Queued initial task message.", { taskId: task.id, queuedMessageId: result.initialMessage.id });
   await controlPanel.sendControlPanel(task);
   if (task.status === "WAITING_REMOTE") {
     await sendRemotePrompt(taskRoom.thread, project, task);

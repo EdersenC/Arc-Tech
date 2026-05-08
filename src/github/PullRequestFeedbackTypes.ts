@@ -35,6 +35,9 @@ export interface PullRequestFeedbackEvent {
   githubUpdatedAt: string | null;
   deliveredTaskMessageId: number | null;
   deliveredAt: string | null;
+  reactionStatus: "pending" | "reacted" | "unsupported" | "failed";
+  reactionError: string | null;
+  reactedAt: string | null;
   createdAt: string;
 }
 
@@ -55,4 +58,18 @@ export interface PullRequestIdentity {
   owner: string;
   repo: string;
   number: number;
+}
+
+export interface PullRequestFeedbackSummary {
+  taskId: number;
+  total: number;
+  queued: number;
+  processing: number;
+  processed: number;
+  failed: number;
+  reacted: number;
+  reactionFailed: number;
+  latestFeedbackAt: string | null;
+  latestDeliveredAt: string | null;
+  lastError: string | null;
 }

@@ -19,6 +19,7 @@ export const agentFleetPlanSchema = z.object({
         prompt: z.string().trim().min(1),
         model: z.string().trim().min(1).optional(),
         effort: effortSchema.optional(),
+        prTitle: z.string().trim().min(1).max(100).optional(),
         dependsOn: z.array(z.string().trim().min(1)).optional(),
         expectedFiles: z.array(z.string().trim().min(1)).optional(),
         acceptanceCriteria: z.array(z.string().trim().min(1)).min(1),

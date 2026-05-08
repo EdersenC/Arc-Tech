@@ -154,6 +154,9 @@ ${agent.dependsOn?.length ? agent.dependsOn.join("\n") : "None"}
 Expected files:
 ${agent.expectedFiles?.length ? agent.expectedFiles.join("\n") : "Not specified"}
 
+Suggested PR title:
+${agent.prTitle ?? `${agent.name}: ${agent.objective}`.slice(0, 100)}
+
 Acceptance criteria:
 ${agent.acceptanceCriteria.map((criterion) => `- ${criterion}`).join("\n")}
 
@@ -169,6 +172,8 @@ Rules:
 - Keep changes mergeable with sibling agents.
 - Do not modify files outside your scope unless necessary.
 - Do not merge your branch.
+- Do not run git add, git commit, git push, or gh pr create.
+- The TypeScript runner owns committing, pushing, and pull request creation after your run exits.
 - Do not delete sibling worktrees.
 - Do not change branches.
 - Run relevant tests if available.
@@ -178,7 +183,7 @@ Rules:
   - tests run
   - known risks
   - branch
-  - PR URL if available`;
+  - PR title: <short descriptive title>`;
   }
 
   generateBranchName(orchestrationId: number, agentIndex: number, agentName: string): string {
