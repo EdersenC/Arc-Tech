@@ -29,7 +29,7 @@ GITHUB_BASE_BRANCH=main
 GITHUB_REMOTE=origin
 EXCALIDRAW_HOST=127.0.0.1
 EXCALIDRAW_PORT=8787
-EXCALIDRAW_CORS_ORIGIN=*
+EXCALIDRAW_CORS_ORIGIN=http://127.0.0.1:5173,http://localhost:5173
 EXCALIDRAW_PROJECT_GUILD_ID=excalidraw
 EXCALIDRAW_PROJECT_CHANNEL_ID=default
 EXCALIDRAW_PROJECT_NAME=Excalidraw
@@ -37,6 +37,7 @@ EXCALIDRAW_PROJECT_NAME=Excalidraw
 
 `DISCORD_GUILD_ID` is required because commands are registered as guild commands.
 The Excalidraw API can run without Discord credentials by using `loadConfig({ requireDiscord: false })`.
+`EXCALIDRAW_CORS_ORIGIN` is a comma-separated allowlist. Use `*` only in a trusted local environment.
 
 ## Codebase Map
 
@@ -150,6 +151,8 @@ Modes:
 Every Arc-generated Excalidraw element includes `customData.arc` with the card id, source, command, status, and task id when one exists. The UI polls `GET /api/tasks` every few seconds and updates card text/status from SQLite. Moving or deleting cards is visual-only for the MVP and never deletes the real task.
 
 The Excalidraw API intentionally does not log in to Discord and does not expose Discord tokens. Execution still flows through `ImplementService`, `TaskMessagePump`, `CodexRunner`, and `GitManager`; the canvas never runs shell commands directly.
+
+For compiled serving, `npm run build` writes the web bundle to `dist/web`; the Excalidraw API serves that directory when Vite is not in front of it.
 
 MVP limitations: only `/implement` is supported, there is no visual `/orchestrate` yet, collaboration is not enabled, and task controls such as diff/merge/cancel remain in the existing Discord task UI for now.
 

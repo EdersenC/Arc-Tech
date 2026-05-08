@@ -121,6 +121,20 @@ export class ExcalidrawCardsRepo {
     if (!existing) {
       return null;
     }
+    const next = {
+      title: taskTitle(task),
+      label: taskCardLabel(task),
+      status: mapTaskStatus(task.status),
+      branch: task.taskBranch,
+    };
+    if (
+      existing.title === next.title &&
+      existing.label === next.label &&
+      existing.status === next.status &&
+      existing.branch === next.branch
+    ) {
+      return existing;
+    }
     this.db
       .prepare(
         `
@@ -135,10 +149,7 @@ export class ExcalidrawCardsRepo {
       )
       .run({
         id: existing.id,
-        title: taskTitle(task),
-        label: taskCardLabel(task),
-        status: mapTaskStatus(task.status),
-        branch: task.taskBranch,
+        ...next,
       });
     return this.findById(existing.id);
   }
@@ -147,6 +158,18 @@ export class ExcalidrawCardsRepo {
     const fields = Object.entries(input).filter(([, value]) => typeof value === "number" && Number.isFinite(value));
     if (fields.length === 0) {
       return this.findById(id);
+    }
+    const existing = this.findById(id);
+    if (!existing) {
+      return null;
+    }
+    if (
+      (input.x === undefined || existing.x === input.x) &&
+      (input.y === undefined || existing.y === input.y) &&
+      (input.width === undefined || existing.width === input.width) &&
+      (input.height === undefined || existing.height === input.height)
+    ) {
+      return existing;
     }
     const columnMap = { x: "x", y: "y", width: "width", height: "height" } as const;
     const params: Record<string, unknown> = { id };

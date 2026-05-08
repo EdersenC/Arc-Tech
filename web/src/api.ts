@@ -63,11 +63,12 @@ export async function listTasks(): Promise<{ tasks: ArcTask[]; cards: ArcCard[] 
 }
 
 export async function updateCardPosition(card: Pick<ArcCard, "id" | "x" | "y" | "width" | "height">): Promise<void> {
-  await fetch(`/api/excalidraw/cards/${encodeURIComponent(card.id)}`, {
+  const response = await fetch(`/api/excalidraw/cards/${encodeURIComponent(card.id)}`, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ x: card.x, y: card.y, width: card.width, height: card.height }),
   });
+  await parseJsonResponse(response);
 }
 
 async function parseJsonResponse<T>(response: Response): Promise<T> {

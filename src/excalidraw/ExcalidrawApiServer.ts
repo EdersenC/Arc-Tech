@@ -1,13 +1,12 @@
 import fs from "node:fs/promises";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type { AppConfig } from "../config.js";
 import type { ProjectStore, TaskStore } from "../stores.js";
 import type { ImplementService } from "../tasks/ImplementService.js";
 import type { Project, Task } from "../types.js";
 import { ExcalidrawCardsRepo } from "./ExcalidrawCardsRepo.js";
-import { mapTaskStatus, oneLine, taskTitle, type ExcalidrawCard, type ExcalidrawTaskView } from "./types.js";
+import { mapTaskStatus, oneLine, taskCardLabel, taskTitle, type ExcalidrawCard, type ExcalidrawTaskView } from "./types.js";
 
 interface ApiDeps {
   config: AppConfig;
@@ -19,7 +18,7 @@ interface ApiDeps {
 
 type JsonRecord = Record<string, unknown>;
 
-const STATIC_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../web");
+const STATIC_ROOT = path.resolve(process.cwd(), "dist/web");
 
 export class ExcalidrawApiServer {
   private readonly server = http.createServer((req, res) => {
@@ -51,7 +50,7 @@ export class ExcalidrawApiServer {
   }
 
   private async route(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    this.applyCors(res);
+    this.applyCors(req, res);
     if (req.method === "OPTIONS") {
       res.writeHead(204).end();
       return;
@@ -215,7 +214,8 @@ export class ExcalidrawApiServer {
   }
 
   private taskView(task: Task): ExcalidrawTaskView {
-    const card = this.deps.cards.updateFromTask(task) ?? this.deps.cards.findByTaskId(task.id);
+    const storedCard = this.deps.cards.findByTaskId(task.id);
+    const card = storedCard ? cardViewForTask(storedCard, task) : null;
     return {
       taskId: String(task.id),
       numericTaskId: task.id,
@@ -238,7 +238,7 @@ export class ExcalidrawApiServer {
     if (!card.taskId) return card;
     const task = this.deps.tasks.getById(card.taskId);
     if (!task) return card;
-    return this.deps.cards.updateFromTask(task) ?? card;
+    return cardViewForTask(card, task);
   }
 
   private async serveStatic(pathname: string, res: ServerResponse): Promise<void> {
@@ -261,8 +261,12 @@ export class ExcalidrawApiServer {
     }
   }
 
-  private applyCors(res: ServerResponse): void {
-    res.setHeader("Access-Control-Allow-Origin", this.deps.config.excalidrawCorsOrigin);
+  private applyCors(req: IncomingMessage, res: ServerResponse): void {
+    const origin = allowedCorsOrigin(req.headers.origin, this.deps.config.excalidrawCorsOrigin);
+    if (origin) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+    }
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   }
@@ -299,11 +303,14 @@ function parseImplementCommand(message: string): { original: string; prompt: str
     throw new Error("/implement requires a non-empty message.");
   }
   const match = /^\/implement(?:\s+([\s\S]+))?$/i.exec(message);
-  const prompt = match ? (match[1] ?? "").trim() : message.trim();
+  if (!match) {
+    throw new Error("Use /implement <message>.");
+  }
+  const prompt = (match[1] ?? "").trim();
   if (!prompt) {
     throw new Error("/implement requires a non-empty message.");
   }
-  return { original: match ? `/implement ${prompt}` : `/implement ${prompt}`, prompt };
+  return { original: `/implement ${prompt}`, prompt };
 }
 
 function stringField(body: JsonRecord, key: string, defaultValue = ""): string {
@@ -342,8 +349,32 @@ function contentType(fullPath: string): string {
   return "application/octet-stream";
 }
 
+function cardViewForTask(card: ExcalidrawCard, task: Task): ExcalidrawCard {
+  return {
+    ...card,
+    title: taskTitle(task),
+    label: taskCardLabel(task),
+    status: mapTaskStatus(task.status),
+    branch: task.taskBranch,
+  };
+}
+
+function allowedCorsOrigin(requestOrigin: string | undefined, configured: string): string | null {
+  const allowed = configured
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  if (allowed.includes("*")) {
+    return "*";
+  }
+  if (requestOrigin && allowed.includes(requestOrigin)) {
+    return requestOrigin;
+  }
+  return requestOrigin ? null : (allowed[0] ?? null);
+}
+
 function isClientError(error: unknown): boolean {
   if (error instanceof SyntaxError) return true;
   const message = error instanceof Error ? error.message : String(error);
-  return /must be|required|too large|non-empty|mode must|source=/.test(message);
+  return /must be|required|too large|non-empty|mode must|source=|Use \/implement/.test(message);
 }

@@ -50,6 +50,7 @@ export default function App() {
   const refresh = useCallback(async () => {
     const response = await listTasks();
     applyCardsToScene(response.cards);
+    setError(null);
     setStatus(`Loaded ${response.cards.length} Arc card${response.cards.length === 1 ? "" : "s"}`);
   }, [applyCardsToScene]);
 
@@ -101,7 +102,9 @@ export default function App() {
     persistTimerRef.current = window.setTimeout(() => {
       const updates = changedCardPositions(elements, cardsRef.current);
       for (const update of updates) {
-        void updateCardPosition(update).catch(() => undefined);
+        void updateCardPosition(update).catch((positionError) => {
+          setError(positionError instanceof Error ? positionError.message : String(positionError));
+        });
       }
       if (updates.length > 0) {
         cardsRef.current = cardsRef.current.map((card) => updates.find((update) => update.id === card.id) ?? card);
