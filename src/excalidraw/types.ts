@@ -39,7 +39,18 @@ export interface ExcalidrawTaskProgress {
   error: string | null;
   summary: string | null;
   pullRequestUrl: string | null;
+  pullRequestFeedback: ExcalidrawPullRequestFeedbackProgress | null;
   lastActivityAt: string;
+}
+
+export interface ExcalidrawPullRequestFeedbackProgress {
+  state: "queued" | "resolving" | "resolved" | "failed";
+  total: number;
+  active: number;
+  reacted: number;
+  reactionFailed: number;
+  latestAt: string | null;
+  lastError: string | null;
 }
 
 export interface ExcalidrawTaskView {
@@ -78,6 +89,7 @@ export function taskCardLabelWithProgress(task: Task, progress?: ExcalidrawTaskP
     `Status: ${status}`,
     progress?.phase ? `Phase: ${oneLine(progress.phase, 96)}` : null,
     progress?.activity ? `Activity: ${oneLine(progress.activity, 112)}` : null,
+    progress?.pullRequestFeedback ? `PR feedback: ${feedbackLine(progress.pullRequestFeedback)}` : null,
     progress?.currentCommand ? `Command now: ${oneLine(progress.currentCommand, 104)}` : null,
     progress?.changedFiles.length ? `Changed: ${oneLine(progress.changedFiles.join(", "), 112)}` : null,
     progress ? `Messages: ${messageCountsLine(progress.messageCounts)}` : null,
@@ -111,6 +123,17 @@ function messageCountsLine(counts: ExcalidrawTaskProgress["messageCounts"]): str
     counts.failed ? `${counts.failed} failed` : null,
   ].filter(Boolean);
   return parts.length ? parts.join(" / ") : "none";
+}
+
+function feedbackLine(feedback: ExcalidrawPullRequestFeedbackProgress): string {
+  const parts = [
+    feedback.state,
+    `${feedback.total} item${feedback.total === 1 ? "" : "s"}`,
+    feedback.active ? `${feedback.active} active` : null,
+    feedback.reacted ? `${feedback.reacted} reacted` : null,
+    feedback.reactionFailed ? `${feedback.reactionFailed} reaction failed` : null,
+  ].filter(Boolean);
+  return parts.join(" / ");
 }
 
 function compactTimestamp(value: string): string {

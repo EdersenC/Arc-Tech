@@ -153,7 +153,7 @@ Modes:
 
 Use the repo panel to connect the Excalidraw project to a GitHub remote. The API exposes `GET /api/excalidraw/project` for readiness and `POST /api/excalidraw/project/remote` with `{ "remoteUrl": "https://github.com/owner/repo.git" }` to configure/fetch the repo. If PRs are disabled or no remote is connected, Direct Agent is blocked before task creation instead of silently completing local-only work without a PR.
 
-Every Arc-generated Excalidraw element includes `customData.arc` with the card id, source, command, status, task id, and latest progress when one exists. The UI polls `GET /api/tasks` every few seconds and updates card text/status from SQLite. Direct agent cards grow as runner information arrives, including phase, latest activity, command events, changed files, queue counts, summaries, errors, and PR links. Cards with browser-safe links, especially GitHub PR URLs, also get an Excalidraw element link so the canvas link control can open them. Moving cards persists their canvas position; deleting cards is visual-only for the MVP and never deletes the real task.
+Every Arc-generated Excalidraw element includes `customData.arc` with the card id, source, command, status, task id, and latest progress when one exists. The UI polls `GET /api/tasks` every few seconds and updates card text/status from SQLite. Direct agent cards grow as runner information arrives, including phase, latest activity, PR feedback resolution state, command events, changed files, queue counts, summaries, errors, and PR links. Cards with browser-safe links, especially GitHub PR URLs, also get an Excalidraw element link so the canvas link control can open them. Moving cards persists their canvas position; deleting cards is visual-only for the MVP and never deletes the real task.
 
 The Excalidraw API intentionally does not log in to Discord and does not expose Discord tokens. Execution still flows through `ImplementService`, `TaskMessagePump`, `CodexRunner`, and `GitManager`; the canvas never runs shell commands directly.
 
@@ -249,7 +249,9 @@ Implementation agents can propose their own PR names by ending with `PR title: <
 
 When `GITHUB_PR_FEEDBACK_ENABLED=true`, the runner polls tracked open PRs created by agent tasks. The worker uses `gh api` to read PR issue comments, review summaries, and inline review comments. New feedback is deduped in SQLite, queued as a normal task follow-up, and the owning agent task is automatically enqueued.
 
-The worker posts a short visibility update in the child task thread and parent orchestration thread when applicable. Codex receives only the task follow-up prompt in its existing worktree and branch; it does not receive Discord credentials and does not call Discord APIs.
+The worker starts in both the Discord bot and the standalone Excalidraw server. It posts a short visibility update in the child task thread and parent orchestration thread when applicable. Excalidraw cards show PR feedback as `queued`, `resolving`, or `resolved` while the same task runner handles the follow-up. Codex receives only the task follow-up prompt in its existing worktree and branch; it does not receive Discord credentials and does not call Discord APIs.
+
+When feedback is queued, the runner attempts to add an `eyes` reaction to supported GitHub issue comments and inline review comments so the reviewer can see that Arc-Tech picked it up. Review summary events are still queued for the agent, but GitHub does not expose the same reaction endpoint for every review event.
 
 Polling defaults to the PR feature flag. Set `GITHUB_PR_FEEDBACK_POLL_MS` to control the interval.
 

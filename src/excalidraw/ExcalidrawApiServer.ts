@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import type { AppConfig } from "../config.js";
+import type { PullRequestFeedbackRepo } from "../github/PullRequestFeedbackRepo.js";
 import type { ProjectStore, TaskStore } from "../stores.js";
 import type { ImplementService } from "../tasks/ImplementService.js";
 import type { Project, Task } from "../types.js";
@@ -24,6 +25,7 @@ interface ApiDeps {
   tasks: TaskStore;
   implementService: ImplementService;
   cards: ExcalidrawCardsRepo;
+  feedback?: PullRequestFeedbackRepo;
 }
 
 type JsonRecord = Record<string, unknown>;
@@ -334,7 +336,12 @@ export class ExcalidrawApiServer {
   }
 
   private taskProgress(task: Task): ExcalidrawTaskProgress {
-    return buildTaskProgress(task, this.deps.tasks.listRecentCodexActivity(task.id, 12), this.deps.tasks.getTaskMessageStatusCounts(task.id));
+    return buildTaskProgress(
+      task,
+      this.deps.tasks.listRecentCodexActivity(task.id, 12),
+      this.deps.tasks.getTaskMessageStatusCounts(task.id),
+      this.deps.feedback?.getTaskFeedbackSummary(task.id) ?? null,
+    );
   }
 
   private async serveStatic(pathname: string, res: ServerResponse): Promise<void> {

@@ -160,6 +160,9 @@ export class AppDatabase {
         github_updated_at TEXT,
         delivered_task_message_id INTEGER REFERENCES task_messages(id) ON DELETE SET NULL,
         delivered_at TEXT,
+        reaction_status TEXT NOT NULL DEFAULT 'pending',
+        reaction_error TEXT,
+        reacted_at TEXT,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         UNIQUE (tracked_pr_id, external_id)
       );
@@ -195,6 +198,11 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_excalidraw_cards_task ON excalidraw_cards(task_id);
       CREATE INDEX IF NOT EXISTS idx_excalidraw_cards_project ON excalidraw_cards(project_id, updated_at);
     `);
+    this.addColumns("pull_request_feedback_events", [
+      ["reaction_status", "TEXT NOT NULL DEFAULT 'pending'"],
+      ["reaction_error", "TEXT"],
+      ["reacted_at", "TEXT"],
+    ]);
   }
 
   private addColumns(table: string, columns: Array<[string, string]>): void {

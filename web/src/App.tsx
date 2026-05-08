@@ -35,6 +35,7 @@ type ArcElement = {
       phase?: string;
       activity?: string;
       lastActivityAt?: string;
+      feedbackState?: string | null;
       link?: string | null;
       linkLabel?: string | null;
     };
@@ -272,6 +273,7 @@ function cardsToElements(cards: ArcCard[]) {
           phase: card.progress?.phase,
           activity: card.progress?.activity,
           lastActivityAt: card.progress?.lastActivityAt,
+          feedbackState: card.progress?.pullRequestFeedback?.state ?? null,
           link: primaryLink?.url ?? null,
           linkLabel: primaryLink?.label ?? null,
         },

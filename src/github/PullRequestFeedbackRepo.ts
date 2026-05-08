@@ -3,6 +3,7 @@ import type { Task } from "../types.js";
 import type {
   NormalizedPullRequestFeedback,
   PullRequestFeedbackEvent,
+  PullRequestFeedbackSummary,
   PullRequestIdentity,
   TrackedPullRequest,
 } from "./PullRequestFeedbackTypes.js";
@@ -42,6 +43,9 @@ type PullRequestFeedbackEventRow = {
   github_updated_at: string | null;
   delivered_task_message_id: number | null;
   delivered_at: string | null;
+  reaction_status: PullRequestFeedbackEvent["reactionStatus"];
+  reaction_error: string | null;
+  reacted_at: string | null;
   created_at: string;
 };
 
@@ -247,6 +251,73 @@ export class PullRequestFeedbackRepo {
       )
       .run(taskMessageId, ...eventIds);
   }
+
+  markReaction(eventId: number, status: PullRequestFeedbackEvent["reactionStatus"], error: string | null = null): void {
+    this.db
+      .prepare(
+        `
+        UPDATE pull_request_feedback_events
+        SET reaction_status = ?,
+            reaction_error = ?,
+            reacted_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE reacted_at END
+        WHERE id = ?
+      `,
+      )
+      .run(status, error, status === "reacted" || status === "unsupported" ? 1 : 0, eventId);
+  }
+
+  getTaskFeedbackSummary(taskId: number): PullRequestFeedbackSummary | null {
+    const row = this.db
+      .prepare(
+        `
+        SELECT
+          COUNT(e.id) AS total,
+          COALESCE(SUM(CASE WHEN tm.status = 'queued' THEN 1 ELSE 0 END), 0) AS queued,
+          COALESCE(SUM(CASE WHEN tm.status = 'processing' THEN 1 ELSE 0 END), 0) AS processing,
+          COALESCE(SUM(CASE WHEN tm.status = 'processed' THEN 1 ELSE 0 END), 0) AS processed,
+          COALESCE(SUM(CASE WHEN tm.status = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
+          COALESCE(SUM(CASE WHEN e.reaction_status = 'reacted' THEN 1 ELSE 0 END), 0) AS reacted,
+          COALESCE(SUM(CASE WHEN e.reaction_status = 'failed' THEN 1 ELSE 0 END), 0) AS reaction_failed,
+          MAX(COALESCE(e.github_updated_at, e.github_created_at, e.created_at)) AS latest_feedback_at,
+          MAX(e.delivered_at) AS latest_delivered_at,
+          MAX(t.last_error) AS last_error
+        FROM pull_request_feedback_events e
+        LEFT JOIN task_messages tm ON tm.id = e.delivered_task_message_id
+        LEFT JOIN tracked_pull_requests t ON t.id = e.tracked_pr_id
+        WHERE e.task_id = ?
+      `,
+      )
+      .get(taskId) as
+      | {
+          total: number;
+          queued: number;
+          processing: number;
+          processed: number;
+          failed: number;
+          reacted: number;
+          reaction_failed: number;
+          latest_feedback_at: string | null;
+          latest_delivered_at: string | null;
+          last_error: string | null;
+        }
+      | undefined;
+    if (!row || row.total === 0) {
+      return null;
+    }
+    return {
+      taskId,
+      total: Number(row.total),
+      queued: Number(row.queued),
+      processing: Number(row.processing),
+      processed: Number(row.processed),
+      failed: Number(row.failed),
+      reacted: Number(row.reacted),
+      reactionFailed: Number(row.reaction_failed),
+      latestFeedbackAt: row.latest_feedback_at,
+      latestDeliveredAt: row.latest_delivered_at,
+      lastError: row.last_error,
+    };
+  }
 }
 
 function trackedParams(task: Task, identity: PullRequestIdentity, prUrl: string) {
@@ -308,6 +379,9 @@ function mapFeedback(row: PullRequestFeedbackEventRow): PullRequestFeedbackEvent
     githubUpdatedAt: row.github_updated_at,
     deliveredTaskMessageId: row.delivered_task_message_id,
     deliveredAt: row.delivered_at,
+    reactionStatus: row.reaction_status,
+    reactionError: row.reaction_error,
+    reactedAt: row.reacted_at,
     createdAt: row.created_at,
   };
 }

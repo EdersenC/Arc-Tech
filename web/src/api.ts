@@ -37,7 +37,18 @@ export interface ArcTaskProgress {
   error: string | null;
   summary: string | null;
   pullRequestUrl: string | null;
+  pullRequestFeedback: ArcPullRequestFeedbackProgress | null;
   lastActivityAt: string;
+}
+
+export interface ArcPullRequestFeedbackProgress {
+  state: "queued" | "resolving" | "resolved" | "failed";
+  total: number;
+  active: number;
+  reacted: number;
+  reactionFailed: number;
+  latestAt: string | null;
+  lastError: string | null;
 }
 
 export interface ArcTask {
