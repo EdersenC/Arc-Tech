@@ -1,7 +1,46 @@
 import type { Task, TaskStatus } from "../types.js";
 
-export type ExcalidrawCardMode = "direct_agent" | "plan_card_only";
+export type ExcalidrawCardMode =
+  | "direct_agent"
+  | "plan_card_only"
+  | "orchestration_parent"
+  | "orchestration_agent"
+  | "orchestration_border"
+  | "orchestration_question";
 export type ExcalidrawTaskStatus = "queued" | "running" | "completed" | "failed" | "planned";
+
+export interface ExcalidrawCardMetadata {
+  type?:
+    | "task"
+    | "plan"
+    | "orchestration_parent"
+    | "orchestration_agent"
+    | "orchestration_border"
+    | "orchestration_question";
+  cardType?: ExcalidrawCardMode;
+  orchestrationId?: number;
+  projectId?: number;
+  taskId?: number;
+  parentCardId?: string;
+  parentOrchestrationId?: number;
+  agentIndex?: number;
+  agentName?: string;
+  agentRole?: string;
+  source?: "excalidraw" | "discord";
+  command?: string;
+  status?: string;
+  phase?: string;
+  activity?: string;
+  lastActivityAt?: string;
+  feedbackState?: string | null;
+  link?: string | null;
+  linkLabel?: string | null;
+  planSummary?: string;
+  readySummary?: string;
+  goal?: string;
+  questionId?: string;
+  title?: string;
+}
 
 export interface ExcalidrawCardLink {
   label: string;
@@ -19,11 +58,13 @@ export interface ExcalidrawCard {
   label: string;
   status: string;
   branch: string | null;
+  parentCardId: string | null;
   x: number;
   y: number;
   width: number;
   height: number;
   links: ExcalidrawCardLink[];
+  metadata: ExcalidrawCardMetadata | null;
   progress?: ExcalidrawTaskProgress;
   createdAt: string;
   updatedAt: string;

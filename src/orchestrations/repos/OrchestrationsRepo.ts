@@ -8,6 +8,8 @@ type OrchestrationRow = {
   discord_thread_id: string | null;
   discord_thread_url: string | null;
   control_panel_message_id: string | null;
+  parent_card_id: string | null;
+  border_card_id: string | null;
   author_user_id: string;
   status: OrchestrationStatus;
   goal: string;
@@ -110,8 +112,16 @@ export class OrchestrationsRepo {
     return this.update(id, { finalPlanJson: planJson, status: "READY_TO_ORCHESTRATE" });
   }
 
+  clearFinalPlan(id: number, status: OrchestrationStatus): Orchestration {
+    return this.update(id, { finalPlanJson: null, status });
+  }
+
   updateBounds(id: number, minAgents: number, maxAgents: number): Orchestration {
     return this.update(id, { minAgents, maxAgents });
+  }
+
+  updateCardIds(id: number, parentCardId: string | null, borderCardId: string | null): Orchestration {
+    return this.update(id, { parentCardId, borderCardId });
   }
 
   markLaunched(id: number): Orchestration {
@@ -167,6 +177,8 @@ export class OrchestrationsRepo {
         | "minAgents"
         | "maxAgents"
         | "autoStartChildren"
+        | "parentCardId"
+        | "borderCardId"
         | "finalPlanJson"
         | "finalSummary"
       >
@@ -183,6 +195,8 @@ export class OrchestrationsRepo {
       minAgents: "min_agents",
       maxAgents: "max_agents",
       autoStartChildren: "auto_start_children",
+      parentCardId: "parent_card_id",
+      borderCardId: "border_card_id",
       finalPlanJson: "final_plan_json",
       finalSummary: "final_summary",
     } as const;
@@ -224,6 +238,8 @@ function mapOrchestration(row: OrchestrationRow): Orchestration {
     minAgents: row.min_agents,
     maxAgents: row.max_agents,
     autoStartChildren: row.auto_start_children !== 0,
+    parentCardId: row.parent_card_id,
+    borderCardId: row.border_card_id,
     finalPlanJson: row.final_plan_json,
     finalSummary: row.final_summary,
     createdAt: row.created_at,

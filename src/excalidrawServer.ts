@@ -11,6 +11,7 @@ import { GitHubPRService } from "./github/GitHubPRService.js";
 import { PullRequestFeedbackRepo } from "./github/PullRequestFeedbackRepo.js";
 import { PullRequestFeedbackWorker } from "./github/PullRequestFeedbackWorker.js";
 import { OrchestrationAgentsRepo } from "./orchestrations/repos/OrchestrationAgentsRepo.js";
+import { OrchestrationMessagesRepo } from "./orchestrations/repos/OrchestrationMessagesRepo.js";
 import { OrchestrationsRepo } from "./orchestrations/repos/OrchestrationsRepo.js";
 import { TaskProgressService } from "./progress/TaskProgressService.js";
 import { dropSudoPrivilegesForLocalServer } from "./runtimeUser.js";
@@ -28,6 +29,7 @@ const tasks = new TaskStore(database.db);
 const cards = new ExcalidrawCardsRepo(database.db);
 const orchestrations = new OrchestrationsRepo(database.db);
 const orchestrationAgents = new OrchestrationAgentsRepo(database.db);
+const orchestrationMessages = new OrchestrationMessagesRepo(database.db);
 const pullRequestFeedback = new PullRequestFeedbackRepo(database.db);
 const git = new GitManager();
 const runner = new CodexCliRunner(config.codexBin);
@@ -50,10 +52,32 @@ const pullRequestFeedbackWorker = new PullRequestFeedbackWorker(
   pump,
   async () => undefined,
 );
-const server = new ExcalidrawApiServer({ config, projects, tasks, implementService, cards, feedback: pullRequestFeedback });
+const server = new ExcalidrawApiServer({
+  config,
+  projects,
+  tasks,
+  implementService,
+  cards,
+  feedback: pullRequestFeedback,
+  orchestrations,
+  orchestrationAgents,
+  orchestrationMessages,
+});
 
 pump.onTaskUpdated((task) => {
   cards.updateFromTask(task);
+  if (task.parentOrchestrationId && task.orchestrationAgentId) {
+    const terminal = orchestrationStatusForTask(task.status);
+    if (terminal) {
+      orchestrationAgents.updateCompletion(task.orchestrationAgentId, {
+        status: terminal,
+        prUrl: task.pullRequestUrl ?? task.prUrl,
+        completionSummary: task.completionSummary ?? task.finalSummary ?? task.error,
+      });
+    } else if (task.status === "RUNNING" || task.status === "QUEUED") {
+      orchestrationAgents.updateStatus(task.orchestrationAgentId, task.status === "RUNNING" ? "running" : "queued");
+    }
+  }
 });
 pump.restoreQueuedWork();
 pullRequestFeedbackWorker.start();
@@ -67,4 +91,11 @@ async function shutdown(): Promise<void> {
   await server.close().catch(() => undefined);
   database.close();
   process.exit(0);
+}
+
+function orchestrationStatusForTask(status: string): "done" | "failed" | "canceled" | null {
+  if (status === "WAITING_REVIEW" || status === "DONE" || status === "MERGED") return "done";
+  if (status === "FAILED" || status === "ABANDONED") return "failed";
+  if (status === "CANCELED") return "canceled";
+  return null;
 }

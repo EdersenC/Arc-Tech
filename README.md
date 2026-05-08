@@ -146,6 +146,7 @@ The command panel accepts:
 
 ```text
 /implement Add a health check endpoint to the API
+/orchestrate Upgrade the visual runner planning flow
 ```
 
 Modes:
@@ -161,11 +162,13 @@ Direct agent cards grow as runner information arrives, including phase, latest a
 
 Click a task card to open the right-side detail drawer. The drawer loads `GET /api/tasks/:id/history`, showing task status, project, branch, worktree, prompt, changed files, latest activity, command events, final summary or error, full task message history, recent Codex events, and PR feedback events. The drawer also has a follow-up chat box backed by `POST /api/tasks/:id/messages`; messages are queued through the same `TaskMessagePump` path used by Discord task-thread replies. Closed, failed, merged, abandoned, or remote-waiting tasks are rejected with a clear API error.
 
+Excalidraw `/orchestrate` starts a project-scoped visual planning session instead of immediately spawning agents. The parent orchestration card opens a sidebar with the planner transcript, clickable poll-style options, freeform planner replies, final plan review, and a **Spawn Agents** control. Spawning requires explicit approval. When approved, the API creates real child implementation tasks through `ImplementService`, lays their cards out inside one bordered orchestration group in a 3-column grid, and stores parent/child links through task orchestration ids and card metadata. Clicking the outer orchestration card reopens the master plan/history; clicking a child card opens that agent task's normal history and follow-up chat.
+
 The Excalidraw API intentionally does not log in to Discord and does not expose Discord tokens. Execution still flows through `ImplementService`, `TaskMessagePump`, `CodexRunner`, and `GitManager`; the canvas never runs shell commands directly.
 
 For compiled serving, `npm run build` writes the web bundle to `dist/web`; the Excalidraw API serves that directory when Vite is not in front of it.
 
-Current limitations: only `/implement` is supported from Excalidraw, there is no visual `/orchestrate` yet, collaboration is not enabled, and task controls such as diff/merge/cancel remain in the existing Discord task UI for now.
+Current limitations: the Excalidraw planner loop uses structured stored planning state for the MVP; collaborative multi-user editing is not enabled, and task controls such as diff/merge/cancel remain in the existing Discord task UI for now.
 
 ## Project Git Remote
 

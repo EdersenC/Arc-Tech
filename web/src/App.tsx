@@ -1,18 +1,25 @@
 import { Excalidraw, convertToExcalidrawElements } from "@excalidraw/excalidraw";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type MutableRefObject } from "react";
 import {
+  answerOrchestrationQuestion,
   connectProjectRemote,
   createProject,
   getProject,
+  getOrchestration,
   getTaskHistory,
+  launchOrchestration,
   listProjects,
   listTasks,
   sendTaskMessage,
+  sendOrchestrationMessage,
   submitImplement,
+  submitOrchestrate,
   updateCardPosition,
   type ArcCard,
   type ArcCardMode,
   type ArcLink,
+  type ArcOrchestrationView,
+  type ArcPlannerQuestion,
   type ArcProject,
   type ArcTaskDetail,
 } from "./api";
@@ -20,7 +27,7 @@ import {
 const ACTIVE_PROJECT_KEY = "arc-tech.excalidraw.activeProjectId";
 
 type ExcalidrawApi = {
-  updateScene: (scene: { elements: readonly unknown[] }) => void;
+  updateScene: (scene: { elements?: readonly unknown[]; appState?: Partial<ArcAppState> }) => void;
   getSceneElements: () => readonly ArcElement[];
   getAppState: () => ArcAppState;
 };
@@ -45,6 +52,7 @@ type ArcElement = {
       cardId?: string;
       type?: string;
       taskId?: string | null;
+      orchestrationId?: number;
       source?: string;
       command?: string;
       status?: string;
@@ -65,6 +73,7 @@ export default function App() {
   const activeProjectIdRef = useRef<number | null>(initialProjectId());
   const selectedCardIdRef = useRef<string | null>(null);
   const selectedTaskIdRef = useRef<number | null>(initialTaskId());
+  const selectedOrchestrationIdRef = useRef<number | null>(null);
   const initialDeepLinkTaskIdRef = useRef<number | null>(selectedTaskIdRef.current);
   const persistTimerRef = useRef<number | null>(null);
   const pendingPositionUpdatesRef = useRef<Map<string, ArcCard>>(new Map());
@@ -80,7 +89,10 @@ export default function App() {
   const [remoteUrl, setRemoteUrl] = useState("");
   const [selectedCard, setSelectedCard] = useState<ArcCard | null>(null);
   const [taskDetail, setTaskDetail] = useState<ArcTaskDetail | null>(null);
+  const [orchestrationDetail, setOrchestrationDetail] = useState<ArcOrchestrationView | null>(null);
   const [chatMessage, setChatMessage] = useState("");
+  const [orchestrationMessage, setOrchestrationMessage] = useState("");
+  const [selectedOptions, setSelectedOptions] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
@@ -91,6 +103,14 @@ export default function App() {
   const loadTaskDetail = useCallback(async (taskId: number) => {
     const detail = await getTaskHistory(taskId);
     setTaskDetail(detail);
+    setError(null);
+    return detail;
+  }, []);
+
+  const loadOrchestrationDetail = useCallback(async (orchestrationId: number) => {
+    const detail = await getOrchestration(orchestrationId);
+    setOrchestrationDetail(detail);
+    setSelectedOptions(new Set());
     setError(null);
     return detail;
   }, []);
@@ -131,7 +151,12 @@ export default function App() {
         setError(detailError instanceof Error ? detailError.message : String(detailError));
       });
     }
-  }, [applyCardsToScene, loadTaskDetail]);
+    if (selectedOrchestrationIdRef.current) {
+      await loadOrchestrationDetail(selectedOrchestrationIdRef.current).catch((detailError) => {
+        setError(detailError instanceof Error ? detailError.message : String(detailError));
+      });
+    }
+  }, [applyCardsToScene, loadOrchestrationDetail, loadTaskDetail]);
 
   const activateProject = useCallback(
     (projectId: number) => {
@@ -143,8 +168,10 @@ export default function App() {
       setCards([]);
       setSelectedCard(null);
       setTaskDetail(null);
+      setOrchestrationDetail(null);
       selectedCardIdRef.current = null;
       selectedTaskIdRef.current = initialDeepLinkTaskIdRef.current;
+      selectedOrchestrationIdRef.current = null;
       initialDeepLinkTaskIdRef.current = null;
       const api = excalidrawApiRef.current;
       if (api) {
@@ -162,6 +189,19 @@ export default function App() {
       selectedCardIdRef.current = cardId;
       const card = cardId ? cardsRef.current.find((candidate) => candidate.id === cardId) ?? null : null;
       setSelectedCard(card);
+      const orchestrationId = card?.metadata?.orchestrationId ?? null;
+      const cardType = card?.metadata?.type ?? card?.mode;
+      if (orchestrationId && cardType && String(cardType).startsWith("orchestration_") && cardType !== "orchestration_agent") {
+        selectedOrchestrationIdRef.current = orchestrationId;
+        selectedTaskIdRef.current = null;
+        setTaskDetail(null);
+        void loadOrchestrationDetail(orchestrationId).catch((detailError) => {
+          setError(detailError instanceof Error ? detailError.message : String(detailError));
+        });
+        return;
+      }
+      selectedOrchestrationIdRef.current = null;
+      setOrchestrationDetail(null);
       if (card?.taskId) {
         selectedTaskIdRef.current = card.taskId;
         void loadTaskDetail(card.taskId).catch((detailError) => {
@@ -172,8 +212,23 @@ export default function App() {
       selectedTaskIdRef.current = null;
       setTaskDetail(null);
     },
-    [loadTaskDetail],
+    [loadOrchestrationDetail, loadTaskDetail],
   );
+
+  const closeSidebar = useCallback(() => {
+    selectedCardIdRef.current = null;
+    selectedTaskIdRef.current = null;
+    selectedOrchestrationIdRef.current = null;
+    setSelectedCard(null);
+    setTaskDetail(null);
+    setOrchestrationDetail(null);
+    setSelectedOptions(new Set());
+    const api = excalidrawApiRef.current;
+    if (api) {
+      sceneApplyUntilRef.current = Date.now() + 250;
+      api.updateScene({ appState: { selectedElementIds: {} } });
+    }
+  }, []);
 
   useEffect(() => {
     let canceled = false;
@@ -203,19 +258,21 @@ export default function App() {
     event.preventDefault();
     setError(null);
     const trimmed = command.trim();
-    if (!/^\/implement(?:\s+|$)/i.test(trimmed)) {
-      setError("Use /implement <message>.");
+    const isImplement = /^\/implement(?:\s+|$)/i.test(trimmed);
+    const isOrchestrate = /^\/orchestrate(?:\s+|$)/i.test(trimmed);
+    if (!isImplement && !isOrchestrate) {
+      setError("Use /implement <message> or /orchestrate <message>.");
       return;
     }
-    if (/^\/implement\s*$/i.test(trimmed)) {
-      setError("Use /implement with a non-empty message.");
+    if (/^\/(?:implement|orchestrate)\s*$/i.test(trimmed)) {
+      setError("Enter a non-empty command message.");
       return;
     }
     if (!project) {
       setError("Select or create an Excalidraw project first.");
       return;
     }
-    if (mode === "direct_agent" && (!project || !project.prReady)) {
+    if (isImplement && mode === "direct_agent" && (!project || !project.prReady)) {
       setError(projectBlockerText(project));
       return;
     }
@@ -223,15 +280,24 @@ export default function App() {
     setBusy(true);
     try {
       const position = cardPositionInViewport(excalidrawApiRef.current, canvasFrameRef.current, spawnViewportRef);
-      const response = await submitImplement(trimmed, mode, project.projectId, position.x, position.y);
-      applyCardsToScene([response.card, ...cardsRef.current.filter((card) => card.id !== response.card.id)]);
-      selectCard(response.card.id);
-      setCommand("/implement ");
-      setStatus(
-        mode === "direct_agent"
-          ? `Created task ${response.taskId} (${response.status})`
-          : "Created plan card",
-      );
+      if (isOrchestrate) {
+        const response = await submitOrchestrate(trimmed, project.projectId, position.x, position.y);
+        applyCardsToScene([response.card, ...cardsRef.current.filter((card) => card.id !== response.card.id)]);
+        setOrchestrationDetail(response.orchestration);
+        selectCard(response.card.id);
+        setCommand("/orchestrate ");
+        setStatus(`Created orchestration #${response.orchestration.orchestration.id}`);
+      } else {
+        const response = await submitImplement(trimmed, mode, project.projectId, position.x, position.y);
+        applyCardsToScene([response.card, ...cardsRef.current.filter((card) => card.id !== response.card.id)]);
+        selectCard(response.card.id);
+        setCommand("/implement ");
+        setStatus(
+          mode === "direct_agent"
+            ? `Created task ${response.taskId} (${response.status})`
+            : "Created plan card",
+        );
+      }
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : String(submitError));
     } finally {
@@ -314,6 +380,71 @@ export default function App() {
     }
   }
 
+  async function handleSendOrchestrationMessage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    if (!orchestrationDetail) {
+      setError("Select an orchestration card before sending planner input.");
+      return;
+    }
+    const content = orchestrationMessage.trim();
+    if (!content) {
+      setError("Enter a planner message.");
+      return;
+    }
+    setChatBusy(true);
+    try {
+      const detail = await sendOrchestrationMessage(orchestrationDetail.orchestration.id, content);
+      setOrchestrationDetail(detail);
+      setOrchestrationMessage("");
+      setStatus(`Updated orchestration #${detail.orchestration.id}`);
+      await refresh(detail.orchestration.projectId);
+    } catch (chatError) {
+      setError(chatError instanceof Error ? chatError.message : String(chatError));
+    } finally {
+      setChatBusy(false);
+    }
+  }
+
+  async function submitOptionAnswer(question: ArcPlannerQuestion, selected: string[], customText = "") {
+    if (!orchestrationDetail) return;
+    setChatBusy(true);
+    setError(null);
+    try {
+      const detail = await answerOrchestrationQuestion(orchestrationDetail.orchestration.id, question.id, selected, customText);
+      setOrchestrationDetail(detail);
+      setSelectedOptions(new Set());
+      setStatus(`Planner updated orchestration #${detail.orchestration.id}`);
+      await refresh(detail.orchestration.projectId);
+    } catch (answerError) {
+      setError(answerError instanceof Error ? answerError.message : String(answerError));
+    } finally {
+      setChatBusy(false);
+    }
+  }
+
+  async function handleLaunchSelectedOrchestration() {
+    if (!orchestrationDetail) return;
+    if (!project?.prReady) {
+      setError(projectBlockerText(project));
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const position = cardPositionInViewport(excalidrawApiRef.current, canvasFrameRef.current, spawnViewportRef);
+      const response = await launchOrchestration(orchestrationDetail.orchestration.id, position.x, position.y);
+      applyCardsToScene([...response.cards, ...cardsRef.current.filter((card) => !response.cards.some((next) => next.id === card.id))]);
+      setOrchestrationDetail(response.orchestration);
+      setStatus(`Spawned ${response.orchestration.agents.length} agents for orchestration #${response.orchestration.orchestration.id}`);
+      await refresh(response.orchestration.orchestration.projectId);
+    } catch (launchError) {
+      setError(launchError instanceof Error ? launchError.message : String(launchError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function handleSceneChange(elements: readonly ArcElement[], appState: ArcAppState = {}) {
     if (Date.now() < sceneApplyUntilRef.current) {
       return;
@@ -353,7 +484,7 @@ export default function App() {
     }, 600);
   }
 
-  const directAgentBlocked = mode === "direct_agent" && (!project || !project.prReady);
+  const directAgentBlocked = /^\/implement/i.test(command.trim()) && mode === "direct_agent" && (!project || !project.prReady);
 
   return (
     <div className={`arc-shell ${selectedCard ? "with-sidebar" : ""}`}>
@@ -409,11 +540,18 @@ export default function App() {
             >
               Plan Card Only
             </button>
+            <button
+              type="button"
+              className={/^\/orchestrate/i.test(command.trim()) ? "active" : ""}
+              onClick={() => setCommand("/orchestrate ")}
+            >
+              Orchestrate
+            </button>
           </div>
           <input
             value={command}
             onChange={(event) => setCommand(event.target.value)}
-            placeholder="/implement Add a health check endpoint"
+            placeholder="/implement Add a health check endpoint or /orchestrate Plan a feature"
             spellCheck={false}
           />
           <button className="submit-button" type="submit" disabled={busy || connecting || directAgentBlocked}>
@@ -457,7 +595,25 @@ export default function App() {
             initialData={{ appState: { viewBackgroundColor: "#f7f4ee" } }}
           />
         </div>
-        {selectedCard ? (
+        {selectedCard && orchestrationDetail ? (
+          <OrchestrationSidebar
+            card={selectedCard}
+            detail={orchestrationDetail}
+            selectedOptions={selectedOptions}
+            chatMessage={orchestrationMessage}
+            chatBusy={chatBusy || busy}
+            onSelectedOptionsChange={setSelectedOptions}
+            onSubmitOption={submitOptionAnswer}
+            onChatMessageChange={setOrchestrationMessage}
+            onSubmitMessage={handleSendOrchestrationMessage}
+            onLaunch={handleLaunchSelectedOrchestration}
+            onOpenTask={(taskId) => {
+              const card = cardsRef.current.find((candidate) => candidate.taskId === taskId);
+              selectCard(card?.id ?? null);
+            }}
+            onClose={closeSidebar}
+          />
+        ) : selectedCard ? (
           <TaskSidebar
             card={selectedCard}
             detail={taskDetail}
@@ -465,12 +621,180 @@ export default function App() {
             chatBusy={chatBusy}
             onChatMessageChange={setChatMessage}
             onSubmitMessage={handleSendMessage}
-            onClose={() => selectCard(null)}
+            onClose={closeSidebar}
           />
         ) : null}
       </div>
     </div>
   );
+}
+
+function OrchestrationSidebar(props: {
+  card: ArcCard;
+  detail: ArcOrchestrationView;
+  selectedOptions: Set<string>;
+  chatMessage: string;
+  chatBusy: boolean;
+  onSelectedOptionsChange: (value: Set<string>) => void;
+  onSubmitOption: (question: ArcPlannerQuestion, selected: string[], customText?: string) => void;
+  onChatMessageChange: (value: string) => void;
+  onSubmitMessage: (event: FormEvent<HTMLFormElement>) => void;
+  onLaunch: () => void;
+  onOpenTask: (taskId: number) => void;
+  onClose: () => void;
+}) {
+  const { detail } = props;
+  const orchestration = detail.orchestration;
+  const question = orchestration.latestQuestion;
+  const canSpawn = ["ready_for_approval", "READY_TO_ORCHESTRATE"].includes(orchestration.status);
+  const canAnswerQuestion = ["waiting_for_user_choice", "asking_questions", "refining_plan", "draft_created"].includes(orchestration.status);
+  return (
+    <aside className="task-sidebar orchestration-sidebar">
+      <div className="sidebar-header">
+        <div>
+          <div className="sidebar-kicker">Orchestration</div>
+          <h2>Orchestration #{orchestration.id}</h2>
+        </div>
+        <button type="button" onClick={props.onClose} aria-label="Close orchestration details">
+          Close
+        </button>
+      </div>
+      <div className="sidebar-section details-grid">
+        <span>Status</span>
+        <strong>{orchestration.status}</strong>
+        <span>Project</span>
+        <strong>{orchestration.projectName ?? orchestration.projectId}</strong>
+        <span>Repo</span>
+        <strong>{orchestration.repoPath ?? "unknown"}</strong>
+        <span>Remote</span>
+        <strong>{orchestration.remoteUrl ?? orchestration.remoteStatus ?? "unknown"}</strong>
+        <span>Agents</span>
+        <strong>{detail.aggregate.done} done / {detail.aggregate.total} total</strong>
+        <span>Branches</span>
+        <strong>{detail.aggregate.branches.length || "none"}</strong>
+      </div>
+      <div className="sidebar-section">
+        <h3>Goal</h3>
+        <pre>{orchestration.goal}</pre>
+      </div>
+      {question && canAnswerQuestion ? (
+        <OptionPoll
+          question={question}
+          selectedOptions={props.selectedOptions}
+          disabled={props.chatBusy}
+          onSelectedOptionsChange={props.onSelectedOptionsChange}
+          onSubmit={(selected) => props.onSubmitOption(question, selected)}
+        />
+      ) : null}
+      <div className="sidebar-section action-row">
+        <button type="button" onClick={props.onLaunch} disabled={!canSpawn || props.chatBusy}>
+          Spawn Agents
+        </button>
+        <button
+          type="button"
+          onClick={() => props.onSubmitOption(question ?? fallbackQuestion(orchestration.id), [], "Continue planning")}
+          disabled={props.chatBusy || orchestration.status === "agents_spawned"}
+        >
+          Continue Planning
+        </button>
+      </div>
+      {orchestration.finalPlan ? (
+        <div className="sidebar-section">
+          <h3>Master Plan</h3>
+          <pre>{JSON.stringify(orchestration.finalPlan, null, 2)}</pre>
+        </div>
+      ) : null}
+      <div className="sidebar-section">
+        <h3>Spawned Agents</h3>
+        <div className="history-list">
+          {detail.agents.length ? (
+            detail.agents.map((agent) => (
+              <button
+                key={agent.id}
+                type="button"
+                className="agent-link-row"
+                onClick={() => agent.childTaskId && props.onOpenTask(agent.childTaskId)}
+                disabled={!agent.childTaskId}
+              >
+                #{agent.agentIndex} {agent.agentName} · {agent.status} · {agent.branchName ?? "no branch"}
+              </button>
+            ))
+          ) : (
+            <p>No child agents spawned yet.</p>
+          )}
+        </div>
+      </div>
+      <form className="chat-panel" onSubmit={props.onSubmitMessage}>
+        <textarea
+          value={props.chatMessage}
+          onChange={(event) => props.onChatMessageChange(event.target.value)}
+          placeholder="Reply to the planner..."
+          rows={4}
+        />
+        <button type="submit" disabled={props.chatBusy}>
+          {props.chatBusy ? "Sending" : "Send Planner Reply"}
+        </button>
+      </form>
+      <div className="sidebar-section">
+        <h3>Planning History</h3>
+        <div className="history-list">
+          {detail.messages.map((message) => (
+            <div className="history-item" key={message.id}>
+              <div>{message.createdAt} · {message.role}</div>
+              <pre>{message.content}</pre>
+            </div>
+          ))}
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function OptionPoll(props: {
+  question: ArcPlannerQuestion;
+  selectedOptions: Set<string>;
+  disabled: boolean;
+  onSelectedOptionsChange: (value: Set<string>) => void;
+  onSubmit: (selected: string[]) => void;
+}) {
+  function toggle(optionId: string) {
+    const next = new Set(props.question.allowMultiSelect ? props.selectedOptions : []);
+    if (next.has(optionId)) {
+      next.delete(optionId);
+    } else {
+      next.add(optionId);
+    }
+    props.onSelectedOptionsChange(next);
+    if (!props.question.allowMultiSelect) {
+      props.onSubmit([optionId]);
+    }
+  }
+  return (
+    <div className="sidebar-section option-poll">
+      <h3>{props.question.text}</h3>
+      {props.question.options.map((option) => (
+        <button
+          key={option.id}
+          type="button"
+          className={props.selectedOptions.has(option.id) ? "selected" : ""}
+          onClick={() => toggle(option.id)}
+          disabled={props.disabled}
+        >
+          <strong>{option.label}</strong>
+          <span>{option.description}</span>
+        </button>
+      ))}
+      {props.question.allowMultiSelect ? (
+        <button type="button" onClick={() => props.onSubmit(Array.from(props.selectedOptions))} disabled={props.disabled || props.selectedOptions.size === 0}>
+          Submit Selection
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function fallbackQuestion(orchestrationId: number): ArcPlannerQuestion {
+  return { id: `orch-${orchestrationId}-custom`, text: "Custom planner input", allowMultiSelect: false, options: [] };
 }
 
 function TaskSidebar(props: {
@@ -613,18 +937,32 @@ function ListOrEmpty({ values, empty }: { values: string[]; empty: string }) {
   );
 }
 
+function canvasCardDrawOrder(cards: ArcCard[]): ArcCard[] {
+  return [...cards].sort((left, right) => cardDrawPriority(left) - cardDrawPriority(right));
+}
+
+function cardDrawPriority(card: ArcCard): number {
+  const type = card.metadata?.type ?? card.mode;
+  if (type === "orchestration_parent" || type === "orchestration_border") return 0;
+  if (card.parentCardId) return 2;
+  return 1;
+}
+
 function cardsToElements(cards: ArcCard[]) {
   return convertToExcalidrawElements(
-    cards.flatMap((card) => {
+    canvasCardDrawOrder(cards).flatMap((card) => {
       const links = cardLinks(card).slice(0, 4);
       const primaryLink = links[0] ?? null;
+      const isOrchestration = (card.metadata?.type ?? card.mode).startsWith("orchestration_");
+      const isOrchestrationContainer = card.metadata?.type === "orchestration_parent" || card.mode === "orchestration_border";
       const metadata = {
         arc: {
-          type: card.mode === "plan_card_only" ? "plan" : "task",
+          type: card.metadata?.type ?? (card.mode === "plan_card_only" ? "plan" : "task"),
           taskId: card.taskId ? String(card.taskId) : null,
+          orchestrationId: card.metadata?.orchestrationId,
           cardId: card.id,
           source: "excalidraw",
-          command: "/implement",
+          command: card.command,
           status: card.status,
           phase: card.progress?.phase,
           activity: card.progress?.activity,
@@ -635,7 +973,7 @@ function cardsToElements(cards: ArcCard[]) {
         },
       };
       const linkTop = card.y + card.height - 28;
-      const textHeight = card.height - (links.length ? 70 : 36);
+      const textHeight = isOrchestrationContainer ? 132 : card.height - (links.length ? 70 : 36);
       return [
         {
           id: rectElementId(card.id),
@@ -661,7 +999,7 @@ function cardsToElements(cards: ArcCard[]) {
           width: card.width - 36,
           height: Math.max(80, textHeight),
           text: card.label,
-          fontSize: 16,
+          fontSize: isOrchestration ? 14 : 16,
           fontFamily: 1,
           textAlign: "left",
           verticalAlign: "top",
@@ -872,7 +1210,7 @@ function strokeFor(status: string): string {
   if (status === "running") return "#2563eb";
   if (status === "completed") return "#15803d";
   if (status === "failed") return "#b91c1c";
-  if (status === "planned") return "#7c3aed";
+  if (status === "planned" || status === "planning" || status === "ready") return "#7c3aed";
   return "#475569";
 }
 
@@ -880,7 +1218,7 @@ function backgroundFor(status: string): string {
   if (status === "running") return "#dbeafe";
   if (status === "completed") return "#dcfce7";
   if (status === "failed") return "#fee2e2";
-  if (status === "planned") return "#ede9fe";
+  if (status === "planned" || status === "planning" || status === "ready") return "#ede9fe";
   return "#f8fafc";
 }
 

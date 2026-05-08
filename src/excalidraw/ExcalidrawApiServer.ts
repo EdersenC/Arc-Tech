@@ -3,9 +3,14 @@ import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import type { AppConfig } from "../config.js";
 import type { PullRequestFeedbackRepo } from "../github/PullRequestFeedbackRepo.js";
+import { stableJson } from "../orchestrations/AgentFleetPlanValidator.js";
+import type { OrchestrationAgentsRepo } from "../orchestrations/repos/OrchestrationAgentsRepo.js";
+import type { OrchestrationMessagesRepo } from "../orchestrations/repos/OrchestrationMessagesRepo.js";
+import type { OrchestrationsRepo } from "../orchestrations/repos/OrchestrationsRepo.js";
+import type { AgentFleetPlan, AgentFleetPlanAgent, Orchestration, OrchestrationMessage, PlannerQuestion } from "../orchestrations/types.js";
 import type { ProjectStore, TaskStore } from "../stores.js";
 import type { ImplementService } from "../tasks/ImplementService.js";
-import type { Project, Task } from "../types.js";
+import { DEFAULT_MODEL, type Effort, type Project, type Task } from "../types.js";
 import { ExcalidrawCardsRepo } from "./ExcalidrawCardsRepo.js";
 import { buildTaskProgress } from "./taskProgress.js";
 import {
@@ -27,6 +32,9 @@ interface ApiDeps {
   implementService: ImplementService;
   cards: ExcalidrawCardsRepo;
   feedback?: PullRequestFeedbackRepo;
+  orchestrations: OrchestrationsRepo;
+  orchestrationAgents: OrchestrationAgentsRepo;
+  orchestrationMessages: OrchestrationMessagesRepo;
 }
 
 type JsonRecord = Record<string, unknown>;
@@ -50,6 +58,11 @@ interface ExcalidrawProjectView {
 }
 
 const STATIC_ROOT = path.resolve(process.cwd(), "dist/web");
+const ORCHESTRATION_COLUMNS = 3;
+const ORCHESTRATION_GRID_GAP = 48;
+const ORCHESTRATION_HEADER_HEIGHT = 180;
+const ORCHESTRATION_AGENT_SLOT_WIDTH = 760;
+const ORCHESTRATION_AGENT_SLOT_HEIGHT = 720;
 
 export class ExcalidrawApiServer {
   private readonly server = http.createServer((req, res) => {
@@ -94,6 +107,35 @@ export class ExcalidrawApiServer {
     }
     if (url.pathname === "/api/implement" && req.method === "POST") {
       await this.handleImplement(req, res);
+      return;
+    }
+    if (url.pathname === "/api/orchestrate" && req.method === "POST") {
+      await this.handleCreateOrchestration(req, res);
+      return;
+    }
+    const orchestrationMatch = /^\/api\/orchestrations\/(\d+)$/.exec(url.pathname);
+    if (orchestrationMatch && req.method === "GET") {
+      await this.handleGetOrchestration(Number(orchestrationMatch[1]), res);
+      return;
+    }
+    const orchestrationMessageMatch = /^\/api\/orchestrations\/(\d+)\/messages$/.exec(url.pathname);
+    if (orchestrationMessageMatch && req.method === "POST") {
+      await this.handleOrchestrationMessage(Number(orchestrationMessageMatch[1]), req, res);
+      return;
+    }
+    const orchestrationAnswerMatch = /^\/api\/orchestrations\/(\d+)\/questions\/([^/]+)\/answer$/.exec(url.pathname);
+    if (orchestrationAnswerMatch && req.method === "POST") {
+      await this.handleOrchestrationAnswer(Number(orchestrationAnswerMatch[1]), decodeURIComponent(orchestrationAnswerMatch[2]), req, res);
+      return;
+    }
+    const orchestrationOptionMatch = /^\/api\/orchestrations\/(\d+)\/options\/([^/]+)\/select$/.exec(url.pathname);
+    if (orchestrationOptionMatch && req.method === "POST") {
+      await this.handleOrchestrationOptionSelect(Number(orchestrationOptionMatch[1]), decodeURIComponent(orchestrationOptionMatch[2]), req, res);
+      return;
+    }
+    const orchestrationLaunchMatch = /^\/api\/orchestrations\/(\d+)\/launch$/.exec(url.pathname);
+    if (orchestrationLaunchMatch && req.method === "POST") {
+      await this.handleLaunchOrchestration(Number(orchestrationLaunchMatch[1]), req, res);
       return;
     }
     if (url.pathname === "/api/excalidraw/projects" && req.method === "GET") {
@@ -152,6 +194,252 @@ export class ExcalidrawApiServer {
     }
 
     this.sendJson(res, 404, { error: "Not found." });
+  }
+
+  private async handleCreateOrchestration(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const body = await readJson(req);
+    const command = parseOrchestrateCommand(stringField(body, "message").trim());
+    const project = await this.projectFromBody(body);
+    const orchestration = this.deps.orchestrations.create({
+      projectId: project.id,
+      authorUserId: "excalidraw",
+      goal: command.prompt,
+      plannerEffort: "high",
+      minAgents: 2,
+      maxAgents: 10,
+      autoStartChildren: true,
+    });
+    this.deps.orchestrationMessages.create(orchestration.id, "user", command.prompt, {
+      authorUserId: "excalidraw",
+      metadata: { source: "excalidraw", kind: "initial_prompt" },
+    });
+
+    const question = plannerQuestion(orchestration, project, 0);
+    const message = plannerQuestionMessage(orchestration.goal, project, question);
+    this.deps.orchestrationMessages.create(orchestration.id, "planner", message, {
+      metadata: { kind: "question", question },
+    });
+    const updated = this.deps.orchestrations.updateStatus(orchestration.id, "waiting_for_user_choice");
+    const label = orchestrationParentLabel(updated, project, message);
+    const size = orchestrationParentSize(label, undefined, orchestration.maxAgents);
+    const card = this.deps.cards.createPlanCard({
+      projectId: project.id,
+      command: command.original,
+      title: `Orchestration #${orchestration.id}`,
+      label,
+      mode: "orchestration_parent",
+      status: "planning",
+      x: numberField(body, "x") ?? nextCardX(orchestration.id),
+      y: numberField(body, "y") ?? nextCardY(orchestration.id),
+      width: size.width,
+      height: size.height,
+      metadata: {
+        type: "orchestration_parent",
+        orchestrationId: orchestration.id,
+        projectId: project.id,
+        goal: command.prompt,
+        planSummary: "Planning started",
+      },
+    });
+    const saved = this.deps.orchestrations.updateCardIds(orchestration.id, card.id, null);
+    this.sendJson(res, 201, { orchestration: this.orchestrationView(saved), card: this.hydrateCard(card) });
+  }
+
+  private async handleGetOrchestration(orchestrationId: number, res: ServerResponse): Promise<void> {
+    const orchestration = this.deps.orchestrations.findById(orchestrationId);
+    if (!orchestration) {
+      this.sendJson(res, 404, { error: `Orchestration ${orchestrationId} not found.` });
+      return;
+    }
+    this.sendJson(res, 200, this.orchestrationView(orchestration));
+  }
+
+  private async handleOrchestrationMessage(orchestrationId: number, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const orchestration = this.requireOrchestration(orchestrationId);
+    const body = await readJson(req);
+    const content = stringField(body, "content").trim();
+    if (!content) {
+      throw new Error("Orchestration message is required.");
+    }
+    this.deps.orchestrationMessages.create(orchestrationId, "user", content, {
+      authorUserId: "excalidraw",
+      metadata: { source: "excalidraw", kind: "freeform" },
+    });
+    const updated = this.advancePlanner(orchestrationId);
+    this.sendJson(res, 202, this.orchestrationView(updated));
+  }
+
+  private async handleOrchestrationAnswer(
+    orchestrationId: number,
+    questionId: string,
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    this.requireOrchestration(orchestrationId);
+    const body = await readJson(req);
+    const selectedOptionIds = arrayOfStrings(body.selectedOptionIds).filter(Boolean);
+    const customText = stringField(body, "customText", "").trim();
+    if (selectedOptionIds.length === 0 && !customText) {
+      throw new Error("Select at least one option or enter a custom answer.");
+    }
+    const question = latestQuestion(this.deps.orchestrationMessages.listRecent(orchestrationId, 20), questionId);
+    const selectedLabels = question
+      ? question.options.filter((option) => selectedOptionIds.includes(option.id)).map((option) => option.label)
+      : selectedOptionIds;
+    const content = customText || `Selected: ${selectedLabels.join(", ")}`;
+    this.deps.orchestrationMessages.create(orchestrationId, "user", content, {
+      authorUserId: "excalidraw",
+      metadata: { source: "excalidraw", kind: "option_answer", questionId, selectedOptionIds, selectedLabels, customText },
+    });
+    const updated = this.advancePlanner(orchestrationId);
+    this.sendJson(res, 202, this.orchestrationView(updated));
+  }
+
+  private async handleOrchestrationOptionSelect(
+    orchestrationId: number,
+    optionId: string,
+    _req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    this.requireOrchestration(orchestrationId);
+    const question = latestQuestion(this.deps.orchestrationMessages.listRecent(orchestrationId, 20));
+    if (!question) {
+      throw new Error("No active planner question is available.");
+    }
+    const option = question.options.find((candidate) => candidate.id === optionId);
+    if (!option) {
+      throw new Error(`Option ${optionId} was not found on the active question.`);
+    }
+    this.deps.orchestrationMessages.create(orchestrationId, "user", `Selected: ${option.label}`, {
+      authorUserId: "excalidraw",
+      metadata: {
+        source: "excalidraw",
+        kind: "option_answer",
+        questionId: question.id,
+        selectedOptionIds: [option.id],
+        selectedLabels: [option.label],
+      },
+    });
+    const updated = this.advancePlanner(orchestrationId);
+    this.sendJson(res, 202, this.orchestrationView(updated));
+  }
+
+  private async handleLaunchOrchestration(orchestrationId: number, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const orchestration = this.requireOrchestration(orchestrationId);
+    const project = await this.getSyncedExcalidrawProject(requireValue(this.deps.projects.getById(orchestration.projectId), "Project not found."));
+    const projectView = this.projectView(project);
+    if (!projectView.prReady) {
+      this.sendJson(res, 409, {
+        code: projectView.githubPrEnabled ? "REMOTE_REQUIRED" : "PR_DISABLED",
+        error: projectView.blockers.join(" "),
+        project: projectView,
+      });
+      return;
+    }
+    const body = await readJson(req);
+    const plan = this.ensureFleetPlan(orchestrationId, project);
+    const current = this.requireOrchestration(orchestrationId);
+    this.deps.orchestrations.updateStatus(orchestrationId, "spawning_agents");
+    const parentCard = current.parentCardId ? this.deps.cards.findById(current.parentCardId) : null;
+    const group = groupLayout(
+      parentCard?.x ?? numberField(body, "x") ?? nextCardX(orchestrationId),
+      parentCard?.y ?? numberField(body, "y") ?? nextCardY(orchestrationId),
+      plan.agentCount,
+    );
+    const container = parentCard
+      ? requireValue(
+          this.deps.cards.updateText(parentCard.id, {
+            title: group.title,
+            label: orchestrationBorderLabel(current, project, plan),
+            status: "running",
+            width: group.width,
+            height: group.height,
+            metadata: {
+              ...(parentCard.metadata ?? {}),
+              type: "orchestration_parent",
+              cardType: "orchestration_parent",
+              orchestrationId,
+              projectId: project.id,
+              goal: current.goal,
+              status: "running",
+              planSummary: plan.architectureSummary,
+            },
+          }),
+          `Parent orchestration card ${parentCard.id} not found.`,
+        )
+      : this.deps.cards.createPlanCard({
+          projectId: project.id,
+          command: `/orchestrate ${current.goal}`,
+          title: group.title,
+          label: orchestrationBorderLabel(current, project, plan),
+          mode: "orchestration_parent",
+          status: "running",
+          x: group.x,
+          y: group.y,
+          width: group.width,
+          height: group.height,
+          metadata: {
+            type: "orchestration_parent",
+            orchestrationId,
+            projectId: project.id,
+            goal: current.goal,
+            status: "running",
+            planSummary: plan.architectureSummary,
+          },
+        });
+    this.deps.orchestrations.updateCardIds(orchestrationId, container.id, container.id);
+    const plannedAgents = this.deps.orchestrationAgents.createMany(orchestrationId, plan.agents);
+    const cards: ExcalidrawCard[] = [container];
+    for (const agent of plannedAgents) {
+      const planAgent = plan.agents[agent.agentIndex - 1];
+      if (!planAgent) continue;
+      const branchName = `codex/orch-${orchestrationId}-agent-${String(agent.agentIndex).padStart(2, "0")}-${slugify(agent.agentName)}`;
+      const worktreeName = `orch-${orchestrationId}-agent-${agent.agentIndex}-${slugify(agent.agentName)}`;
+      const childPrompt = childAgentPrompt(current, plan, planAgent, agent.agentIndex, branchName);
+      const position = childCardPosition(group, agent.agentIndex);
+      const result = await this.deps.implementService.run({
+        project,
+        prompt: childPrompt,
+        requestedBy: "excalidraw",
+        sourceUi: "excalidraw",
+        startImmediately: true,
+        allowLocalOnlyWithoutRemote: false,
+        branchName,
+        worktreeName,
+        model: planAgent.model ?? DEFAULT_MODEL,
+        effort: planAgent.effort ?? ("medium" as Effort),
+        parentOrchestrationId: orchestrationId,
+        orchestrationAgentId: agent.id,
+        agentRole: planAgent.role,
+      });
+      this.deps.orchestrationAgents.updateChildTask(agent.id, result.task.id);
+      this.deps.orchestrationAgents.updateBranch(agent.id, branchName, result.task.worktreePath ?? "");
+      this.deps.orchestrationAgents.updateStatus(agent.id, result.started ? "queued" : "created");
+      const card = this.deps.cards.createForTaskWithMode(result.task, {
+        command: `/orchestrate ${current.goal}`,
+        mode: "orchestration_agent",
+        x: position.x,
+        y: position.y,
+        parentCardId: container.id,
+        metadata: {
+          type: "orchestration_agent",
+          orchestrationId,
+          parentOrchestrationId: orchestrationId,
+          projectId: project.id,
+          agentIndex: agent.agentIndex,
+          agentName: agent.agentName,
+          agentRole: planAgent.role,
+          goal: planAgent.objective,
+          planSummary: planAgent.prompt,
+        },
+      });
+      cards.push(this.hydrateCard(card));
+    }
+    const launched = this.deps.orchestrations.updateStatus(orchestrationId, "agents_spawned");
+    this.deps.orchestrationMessages.create(orchestrationId, "system", `Spawned ${plannedAgents.length} child agents.`, {
+      metadata: { kind: "agents_spawned", childCount: plannedAgents.length },
+    });
+    this.sendJson(res, 201, { orchestration: this.orchestrationView(launched), cards: this.hydrateCards(cards) });
   }
 
   private async handleImplement(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -471,6 +759,112 @@ export class ExcalidrawApiServer {
     };
   }
 
+  private orchestrationView(orchestration: Orchestration): JsonRecord {
+    const project = this.deps.projects.getById(orchestration.projectId);
+    const messages = this.deps.orchestrationMessages.listByOrchestrationId(orchestration.id);
+    const agents = this.deps.orchestrationAgents.listByOrchestrationId(orchestration.id);
+    const parentCard = orchestration.parentCardId ? this.deps.cards.findById(orchestration.parentCardId) : null;
+    const borderCard = orchestration.borderCardId ? this.deps.cards.findById(orchestration.borderCardId) : null;
+    return {
+      orchestration: {
+        ...orchestration,
+        projectName: project?.projectName ?? null,
+        projectSlug: project?.projectSlug ?? null,
+        repoPath: project?.repoPath ?? null,
+        worktreesPath: project?.worktreesPath ?? null,
+        remoteStatus: project?.remoteStatus ?? null,
+        remoteUrl: project?.remoteUrl ?? null,
+        latestQuestion: latestQuestion(messages),
+        finalPlan: parseJson(orchestration.finalPlanJson),
+      },
+      messages: messages.map((message) => ({ ...message, metadata: parseJson(message.metadataJson) })),
+      agents,
+      parentCard,
+      borderCard,
+      childCards: agents
+        .map((agent) => (agent.childTaskId ? this.deps.cards.findByTaskId(agent.childTaskId) : null))
+        .filter((card): card is ExcalidrawCard => Boolean(card))
+        .map((card) => this.hydrateCard(card)),
+      aggregate: aggregateAgents(agents),
+    };
+  }
+
+  private advancePlanner(orchestrationId: number): Orchestration {
+    const orchestration = this.requireOrchestration(orchestrationId);
+    const project = requireValue(this.deps.projects.getById(orchestration.projectId), `Project #${orchestration.projectId} not found.`);
+    const messages = this.deps.orchestrationMessages.listByOrchestrationId(orchestrationId);
+    const answerCount = messages.filter((message) => {
+      const metadata = parseJson(message.metadataJson) as { kind?: string } | null;
+      return metadata?.kind === "option_answer" || metadata?.kind === "freeform";
+    }).length;
+
+    const latestUser = [...messages].reverse().find((message) => message.role === "user");
+    const wantsMorePlanning = latestUser ? isContinuePlanningRequest(latestUser) : false;
+    if (wantsMorePlanning || answerCount < 2) {
+      const step = wantsMorePlanning ? Math.max(2, answerCount) : answerCount;
+      this.deps.orchestrations.clearFinalPlan(orchestrationId, "waiting_for_user_choice");
+      const question = plannerQuestion(orchestration, project, step);
+      const message = plannerQuestionMessage(orchestration.goal, project, question);
+      this.deps.orchestrationMessages.create(orchestrationId, "planner", message, {
+        metadata: { kind: "question", question },
+      });
+      const updated = this.deps.orchestrations.updateStatus(orchestrationId, "waiting_for_user_choice");
+      this.refreshParentOrchestrationCard(updated, message, "planning");
+      return updated;
+    }
+
+    const plan = buildFleetPlan(orchestration, project, messages);
+    const finalPlanJson = stableJson(plan);
+    this.deps.orchestrations.updateFinalPlan(orchestrationId, finalPlanJson);
+    this.deps.orchestrationMessages.create(orchestrationId, "planner", readyMessage(plan), {
+      metadata: { kind: "ready", readySummary: plan.architectureSummary, plan },
+    });
+    const updated = this.deps.orchestrations.updateStatus(orchestrationId, "ready_for_approval");
+    this.refreshParentOrchestrationCard(updated, readyMessage(plan), "ready");
+    return updated;
+  }
+
+  private ensureFleetPlan(orchestrationId: number, project: Project): AgentFleetPlan {
+    const orchestration = this.requireOrchestration(orchestrationId);
+    if (orchestration.finalPlanJson) {
+      const parsed = parseJson(orchestration.finalPlanJson) as AgentFleetPlan | null;
+      if (parsed?.agents?.length) return parsed;
+    }
+    const plan = buildFleetPlan(orchestration, project, this.deps.orchestrationMessages.listByOrchestrationId(orchestrationId));
+    this.deps.orchestrations.updateFinalPlan(orchestrationId, stableJson(plan));
+    return plan;
+  }
+
+  private refreshParentOrchestrationCard(orchestration: Orchestration, latestMessage: string, status: string): void {
+    if (!orchestration.parentCardId) return;
+    const card = this.deps.cards.findById(orchestration.parentCardId);
+    if (!card) return;
+    const project = this.deps.projects.getById(orchestration.projectId);
+    const label = orchestrationParentLabel(orchestration, project ?? undefined, latestMessage);
+    const plan = parseJson(orchestration.finalPlanJson) as AgentFleetPlan | null;
+    const size = orchestrationParentSize(label, card, plan?.agentCount ?? orchestration.maxAgents);
+    this.deps.cards.updateText(card.id, {
+      title: `Orchestration #${orchestration.id}`,
+      label,
+      status,
+      width: size.width,
+      height: size.height,
+      metadata: {
+        ...(card.metadata ?? {}),
+        status,
+        planSummary: latestMessage,
+      },
+    });
+  }
+
+  private requireOrchestration(orchestrationId: number): Orchestration {
+    const orchestration = this.deps.orchestrations.findById(orchestrationId);
+    if (!orchestration) {
+      throw new Error(`Orchestration #${orchestrationId} not found.`);
+    }
+    return orchestration;
+  }
+
   private hydrateCards(cards: ExcalidrawCard[]): ExcalidrawCard[] {
     return cards.map((card) => this.hydrateCard(card));
   }
@@ -524,6 +918,340 @@ export class ExcalidrawApiServer {
   private sendJson(res: ServerResponse, status: number, payload: unknown): void {
     res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(payload));
   }
+}
+
+function parseOrchestrateCommand(message: string): { original: string; prompt: string } {
+  if (!message) {
+    throw new Error("/orchestrate requires a non-empty message.");
+  }
+  const match = /^\/orchestrate(?:\s+([\s\S]+))?$/i.exec(message);
+  if (!match) {
+    throw new Error("Use /orchestrate <message>.");
+  }
+  const prompt = (match[1] ?? "").trim();
+  if (!prompt) {
+    throw new Error("/orchestrate requires a non-empty message.");
+  }
+  return { original: `/orchestrate ${prompt}`, prompt };
+}
+
+function plannerQuestion(orchestration: Orchestration, project: Project, step: number): PlannerQuestion {
+  if (step <= 0) {
+    return {
+      id: `orch-${orchestration.id}-scope`,
+      text: `What kind of update should agents prioritize in ${project.projectName}?`,
+      allowMultiSelect: false,
+      options: [
+        { id: "repo_audit_first", label: "Audit first", description: "Inspect structure, dependencies, runtime, and current failure points." },
+        { id: "dependency_upgrade", label: "Dependency upgrade", description: "Focus on outdated packages, lockfiles, and build/runtime compatibility." },
+        { id: "stability_first", label: "Stability first", description: "Prioritize tests, lint/type errors, and known broken flows." },
+      ],
+    };
+  }
+  if (step === 1) {
+    return {
+      id: `orch-${orchestration.id}-boundaries`,
+      text: "What boundaries should the first agent batch respect?",
+      allowMultiSelect: true,
+      options: [
+        { id: "preserve_behavior", label: "Preserve behavior", description: "Keep existing app behavior unless the plan calls out a deliberate change." },
+        { id: "small_prs", label: "Small PRs", description: "Split work into narrow branches that can be reviewed independently." },
+        { id: "build_required", label: "Build required", description: "Each agent should run the relevant build/test command when possible." },
+      ],
+    };
+  }
+  return {
+    id: `orch-${orchestration.id}-missing-context-${step}`,
+    text: `What repo-specific context should I account for before spawning agents for ${project.projectName}?`,
+    allowMultiSelect: true,
+    options: [
+      { id: "known_broken_area", label: "Known broken area", description: "Use the text box to name the feature, command, or page that is broken." },
+      { id: "target_runtime", label: "Target runtime", description: "Clarify the runtime, framework, device, or deployment target." },
+      { id: "upgrade_constraints", label: "Upgrade constraints", description: "Mention dependencies, versions, files, or behavior that must not change." },
+    ],
+  };
+}
+
+function plannerQuestionMessage(goal: string, project: Project, question: PlannerQuestion): string {
+  return [
+    `Planning: ${oneLine(goal, 120)}`,
+    `Project: ${project.projectName}`,
+    `Repo: ${project.repoPath}`,
+    `Remote: ${project.remoteUrl ?? project.remoteStatus}`,
+    "",
+    question.text,
+    ...question.options.map((option, index) => `${index + 1}. ${option.label} - ${option.description ?? ""}`.trim()),
+    question.allowMultiSelect ? "You can pick multiple options or type a custom answer." : "Pick one option or type a custom answer.",
+  ].join("\n");
+}
+
+function readyMessage(plan: AgentFleetPlan): string {
+  return [
+    "I think this plan is ready to spawn.",
+    "",
+    `Architecture: ${plan.architectureSummary}`,
+    `Agents: ${plan.agentCount}`,
+    ...plan.agents.map((agent, index) => `${index + 1}. ${agent.name} - ${agent.objective}`),
+    "",
+    "Use Spawn Agents when you approve this plan.",
+  ].join("\n");
+}
+
+function latestQuestion(messages: OrchestrationMessage[], questionId?: string): PlannerQuestion | null {
+  for (const message of [...messages].reverse()) {
+    const metadata = parseJson(message.metadataJson) as { kind?: string; question?: PlannerQuestion } | null;
+    if (metadata?.kind !== "question" || !metadata.question) continue;
+    if (!questionId || metadata.question.id === questionId) return metadata.question;
+  }
+  return null;
+}
+
+function buildFleetPlan(orchestration: Orchestration, project: Project, messages: OrchestrationMessage[]): AgentFleetPlan {
+  const decisions = selectedDecisionLines(messages);
+  const maxAgents = Math.max(2, Math.min(10, orchestration.maxAgents));
+  const desired = decisions.some((decision) => /dependency|package|upgrade/i.test(decision))
+    ? ["Repository Audit", "Dependency Upgrade", "Compatibility Tests"]
+    : decisions.some((decision) => /stability|test|build|broken/i.test(decision))
+      ? ["Failure Audit", "Stability Fixes", "Regression Tests"]
+      : ["Repository Audit", "Modernization Plan", "Safe Update Implementation"];
+  const names = desired.slice(0, maxAgents);
+  const agents: AgentFleetPlanAgent[] = names.map((name, index) => {
+    const role = index === names.length - 1 ? "tester" : "implementer";
+    const objective = objectiveForAgent(name, orchestration.goal, project);
+    return {
+      name,
+      role,
+      objective,
+      prompt: [
+        `Implement the "${name}" slice for orchestration #${orchestration.id}.`,
+        `Project: ${project.projectName}`,
+        `Repo path: ${project.repoPath}`,
+        `Remote: ${project.remoteUrl ?? project.remoteStatus}`,
+        `Parent goal: ${orchestration.goal}`,
+        decisions.length ? `Selected planning decisions:\n${decisions.map((decision) => `- ${decision}`).join("\n")}` : "No extra decisions were selected.",
+        `Scope: ${objective}`,
+        "Inspect the actual repository before editing. Keep changes focused on this slice and avoid touching sibling-owned areas unless required for build correctness.",
+      ].join("\n\n"),
+      effort: role === "tester" ? "medium" : "medium",
+      prTitle: `${name}: ${oneLine(orchestration.goal, 48)}`,
+      dependsOn: index === 0 ? [] : [names[0]],
+      expectedFiles: expectedFilesForAgent(name),
+      acceptanceCriteria: [
+        `Changes apply to ${project.projectName}, not the Arc-Tech runner repository.`,
+        "The assigned slice is implemented with minimal unrelated refactors.",
+        "Relevant build/test/validation commands are run when available and reported in the summary.",
+      ],
+    };
+  });
+  return {
+    orchestrationGoal: orchestration.goal,
+    architectureSummary: `Modernize ${project.projectName} for "${oneLine(orchestration.goal, 100)}" using project-scoped agents working in ${project.repoPath}.`,
+    agentCount: agents.length,
+    sharedContext: [
+      `Project: ${project.projectName}`,
+      `Repo path: ${project.repoPath}`,
+      `Remote: ${project.remoteUrl ?? project.remoteStatus}`,
+      `Worktrees: ${project.worktreesPath}`,
+      "The Arc-Tech runner is only the execution harness. Agents must inspect and modify the selected project repository.",
+      decisions.length ? `Planning decisions: ${decisions.join("; ")}` : "No custom planning decisions were selected.",
+    ].join("\n"),
+    integrationStrategy: `Use isolated branches/worktrees for ${project.projectName}; start with repository discovery, then apply narrow modernization changes and run available validation commands.`,
+    agents,
+  };
+}
+
+function selectedDecisionLines(messages: OrchestrationMessage[]): string[] {
+  return messages
+    .filter((message) => message.role === "user")
+    .map((message) => {
+      const metadata = parseJson(message.metadataJson) as { kind?: string; selectedLabels?: string[]; customText?: string } | null;
+      if (metadata?.selectedLabels?.length) return metadata.selectedLabels.join(", ");
+      if (metadata?.customText && !isContinueText(metadata.customText)) return metadata.customText;
+      if (metadata?.kind === "freeform") return message.content;
+      return null;
+    })
+    .filter((value): value is string => typeof value === "string" && value.length > 0 && !isContinueText(value));
+}
+
+function isContinuePlanningRequest(message: OrchestrationMessage): boolean {
+  if (message.role !== "user") return false;
+  const metadata = parseJson(message.metadataJson) as { customText?: string } | null;
+  return isContinueText(metadata?.customText ?? message.content);
+}
+
+function isContinueText(value: string): boolean {
+  return /continue planning|revise|replan|not ready|wrong repo|did u read|did you read|wdym|what\?\?|discord/i.test(value);
+}
+
+function objectiveForAgent(name: string, goal: string, project: Project): string {
+  if (/audit|plan/i.test(name)) return `Inspect ${project.projectName}, identify outdated dependencies/runtime assumptions, and produce focused update targets for ${goal}.`;
+  if (/dependency|upgrade|implementation|fix/i.test(name)) return `Apply safe modernization changes in ${project.projectName} for ${goal}.`;
+  return `Verify ${project.projectName} still builds/runs where possible after modernization work for ${goal}.`;
+}
+
+function expectedFilesForAgent(name: string): string[] {
+  if (/dependency|upgrade/i.test(name)) return ["package.json", "package-lock.json", "requirements.txt", "pyproject.toml", "Cargo.toml"];
+  if (/test|stability|compatibility/i.test(name)) return ["tests/", "README.md", "package.json"];
+  return ["README.md", "package.json", "src/", "app/"];
+}
+
+function childAgentPrompt(
+  orchestration: Orchestration,
+  plan: AgentFleetPlan,
+  agent: AgentFleetPlanAgent,
+  index: number,
+  branchName: string,
+): string {
+  return `You are child implementation agent ${index} for Excalidraw orchestration #${orchestration.id}.
+
+Agent name:
+${agent.name}
+
+Role:
+${agent.role}
+
+Objective:
+${agent.objective}
+
+Master plan:
+${plan.architectureSummary}
+
+Shared context:
+${plan.sharedContext}
+
+Integration strategy:
+${plan.integrationStrategy}
+
+Depends on:
+${agent.dependsOn?.length ? agent.dependsOn.join("\n") : "None"}
+
+Expected files:
+${agent.expectedFiles?.length ? agent.expectedFiles.join("\n") : "Not specified"}
+
+Acceptance criteria:
+${agent.acceptanceCriteria.map((criterion) => `- ${criterion}`).join("\n")}
+
+Branch:
+${branchName}
+
+Detailed prompt:
+${agent.prompt}
+
+Rules:
+- Work only on your assigned objective.
+- Avoid unrelated refactors.
+- Keep changes mergeable with sibling agents.
+- Do not merge your branch.
+- Do not run git add, git commit, git push, or gh pr create.
+- The runner owns committing, pushing, and pull request creation.
+- Run relevant tests if available.
+- End with a concise completion summary.`;
+}
+
+function orchestrationParentLabel(orchestration: Orchestration, project: Project | undefined, latestMessage: string): string {
+  const plan = parseJson(orchestration.finalPlanJson) as AgentFleetPlan | null;
+  return [
+    `Orchestration #${orchestration.id}`,
+    `Status: ${orchestration.status}`,
+    `Project: ${project?.projectName ?? orchestration.projectId}`,
+    `Repo: ${project?.repoPath ?? "unknown"}`,
+    `Remote: ${project?.remoteUrl ?? project?.remoteStatus ?? "unknown"}`,
+    `Goal: ${oneLine(orchestration.goal, 110)}`,
+    plan ? `Plan: ${plan.agentCount} agents` : "Plan: in progress",
+    "",
+    oneLine(latestMessage, 180),
+  ].join("\n");
+}
+
+function orchestrationBorderLabel(orchestration: Orchestration, project: Project, plan: AgentFleetPlan): string {
+  return [
+    `Orchestration #${orchestration.id}: ${oneLine(plan.orchestrationGoal, 80)}`,
+    `Status: spawning agents`,
+    `Project: ${project.projectName}`,
+    `Repo: ${project.repoPath}`,
+    `Agents: ${plan.agentCount}`,
+    `Strategy: ${oneLine(plan.integrationStrategy, 140)}`,
+  ].join("\n");
+}
+
+function orchestrationParentSize(
+  label: string,
+  existing?: Pick<ExcalidrawCard, "width" | "height">,
+  agentCapacity = 3,
+): { width: number; height: number } {
+  const size = taskCardSize(label, existing);
+  const layout = groupLayout(0, 0, agentCapacity);
+  return {
+    width: Math.max(existing?.width ?? 0, size.width, layout.width),
+    height: Math.max(existing?.height ?? 0, size.height, layout.height),
+  };
+}
+
+function groupLayout(x: number, y: number, agentCount: number): { x: number; y: number; width: number; height: number; title: string } {
+  const cols = ORCHESTRATION_COLUMNS;
+  const rows = Math.max(1, Math.ceil(agentCount / cols));
+  return {
+    x: Math.round(x),
+    y: Math.round(y),
+    width: cols * ORCHESTRATION_AGENT_SLOT_WIDTH + (cols + 1) * ORCHESTRATION_GRID_GAP,
+    height: ORCHESTRATION_HEADER_HEIGHT
+      + rows * ORCHESTRATION_AGENT_SLOT_HEIGHT
+      + Math.max(0, rows - 1) * ORCHESTRATION_GRID_GAP
+      + ORCHESTRATION_GRID_GAP,
+    title: "Orchestration Agent Group",
+  };
+}
+
+function childCardPosition(group: { x: number; y: number }, index: number): { x: number; y: number } {
+  const zero = index - 1;
+  const col = zero % ORCHESTRATION_COLUMNS;
+  const row = Math.floor(zero / ORCHESTRATION_COLUMNS);
+  return {
+    x: group.x + ORCHESTRATION_GRID_GAP + col * (ORCHESTRATION_AGENT_SLOT_WIDTH + ORCHESTRATION_GRID_GAP),
+    y: group.y + ORCHESTRATION_HEADER_HEIGHT + row * (ORCHESTRATION_AGENT_SLOT_HEIGHT + ORCHESTRATION_GRID_GAP),
+  };
+}
+
+function aggregateAgents(agents: Array<{ status: string; branchName: string | null; prUrl: string | null }>): JsonRecord {
+  return {
+    total: agents.length,
+    done: agents.filter((agent) => agent.status === "done").length,
+    running: agents.filter((agent) => agent.status === "running" || agent.status === "queued").length,
+    failed: agents.filter((agent) => agent.status === "failed").length,
+    branches: agents.map((agent) => agent.branchName).filter(Boolean),
+    prs: agents.map((agent) => agent.prUrl).filter(Boolean),
+  };
+}
+
+function arrayOfStrings(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string").map((item) => item.trim());
+}
+
+function parseJson(value: string | null): unknown | null {
+  if (!value) return null;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function slugify(value: string): string {
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+  return slug || "agent";
+}
+
+function requireValue<T>(value: T | null | undefined, message: string): T {
+  if (value === null || value === undefined) {
+    throw new Error(message);
+  }
+  return value;
 }
 
 async function readJson(req: IncomingMessage): Promise<JsonRecord> {
@@ -695,5 +1423,5 @@ function looksLikeGitRemote(value: string): boolean {
 function isClientError(error: unknown): boolean {
   if (error instanceof SyntaxError) return true;
   const message = error instanceof Error ? error.message : String(error);
-  return /must be|required|too large|non-empty|mode must|source=|Use \/implement|Git remote URL|project|closed|remote before/.test(message);
+  return /must be|required|too large|non-empty|mode must|source=|Use \/(implement|orchestrate)|Git remote URL|project|closed|remote before|Orchestration message/.test(message);
 }

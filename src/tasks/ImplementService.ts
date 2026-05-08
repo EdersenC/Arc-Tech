@@ -20,6 +20,9 @@ export interface RunImplementInput {
   allowLocalOnlyWithoutRemote?: boolean;
   branchName?: string;
   worktreeName?: string;
+  parentOrchestrationId?: number | null;
+  orchestrationAgentId?: number | null;
+  agentRole?: string | null;
 }
 
 export interface RunImplementResult {
@@ -70,6 +73,9 @@ export class ImplementService {
       sandbox: input.sandbox,
       model: input.model,
       effort: input.effort,
+      parentOrchestrationId: input.parentOrchestrationId ?? null,
+      orchestrationAgentId: input.orchestrationAgentId ?? null,
+      agentRole: input.agentRole ?? null,
       branchName: input.branchName,
       worktreeName: input.worktreeName,
     });

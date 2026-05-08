@@ -1,4 +1,10 @@
-export type ArcCardMode = "direct_agent" | "plan_card_only";
+export type ArcCardMode =
+  | "direct_agent"
+  | "plan_card_only"
+  | "orchestration_parent"
+  | "orchestration_agent"
+  | "orchestration_border"
+  | "orchestration_question";
 export type ArcStatus = "queued" | "running" | "completed" | "failed" | "planned";
 
 export interface ArcLink {
@@ -22,9 +28,24 @@ export interface ArcCard {
   width: number;
   height: number;
   links: ArcLink[];
+  parentCardId?: string | null;
+  metadata?: ArcCardMetadata | null;
   progress?: ArcTaskProgress;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ArcCardMetadata {
+  type?: string;
+  orchestrationId?: number;
+  projectId?: number;
+  taskId?: number;
+  parentOrchestrationId?: number;
+  agentIndex?: number;
+  agentName?: string;
+  agentRole?: string;
+  goal?: string;
+  planSummary?: string;
 }
 
 export interface ArcTaskProgress {
@@ -179,6 +200,93 @@ export interface ArcTaskDetail extends ArcTask {
   };
 }
 
+export interface ArcPlannerOption {
+  id: string;
+  label: string;
+  description?: string;
+}
+
+export interface ArcPlannerQuestion {
+  id: string;
+  text: string;
+  allowMultiSelect: boolean;
+  options: ArcPlannerOption[];
+}
+
+export interface ArcOrchestrationMessage {
+  id: number;
+  role: "user" | "planner" | "system";
+  content: string;
+  metadata?: {
+    kind?: string;
+    question?: ArcPlannerQuestion;
+    selectedLabels?: string[];
+    selectedOptionIds?: string[];
+    readySummary?: string;
+    plan?: unknown;
+  } | null;
+  createdAt: string;
+}
+
+export interface ArcOrchestrationAgent {
+  id: number;
+  orchestrationId: number;
+  childTaskId: number | null;
+  agentIndex: number;
+  agentName: string;
+  role: string;
+  prompt: string;
+  status: string;
+  branchName: string | null;
+  worktreePath: string | null;
+  prUrl: string | null;
+  completionSummary: string | null;
+}
+
+export interface ArcOrchestration {
+  id: number;
+  projectId: number;
+  projectName: string | null;
+  projectSlug: string | null;
+  repoPath: string | null;
+  worktreesPath: string | null;
+  remoteStatus: string | null;
+  remoteUrl: string | null;
+  status: string;
+  goal: string;
+  parentCardId: string | null;
+  borderCardId: string | null;
+  finalPlanJson: string | null;
+  finalPlan?: {
+    orchestrationGoal?: string;
+    architectureSummary?: string;
+    agentCount?: number;
+    sharedContext?: string;
+    integrationStrategy?: string;
+    agents?: Array<{ name?: string; role?: string; objective?: string; prompt?: string; acceptanceCriteria?: string[] }>;
+  } | null;
+  latestQuestion?: ArcPlannerQuestion | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ArcOrchestrationView {
+  orchestration: ArcOrchestration;
+  messages: ArcOrchestrationMessage[];
+  agents: ArcOrchestrationAgent[];
+  parentCard: ArcCard | null;
+  borderCard: ArcCard | null;
+  childCards: ArcCard[];
+  aggregate: {
+    total: number;
+    done: number;
+    running: number;
+    failed: number;
+    branches: string[];
+    prs: string[];
+  };
+}
+
 export interface ImplementResponse {
   taskId: string | null;
   status: ArcStatus;
@@ -206,6 +314,55 @@ export async function submitImplement(message: string, mode: ArcCardMode, projec
       x,
       y,
     }),
+  });
+  return parseJsonResponse(response);
+}
+
+export async function submitOrchestrate(message: string, projectId: number, x: number, y: number): Promise<{ orchestration: ArcOrchestrationView; card: ArcCard }> {
+  const response = await fetch("/api/orchestrate", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message, projectId, x, y }),
+  });
+  return parseJsonResponse(response);
+}
+
+export async function getOrchestration(orchestrationId: number): Promise<ArcOrchestrationView> {
+  const response = await fetch(`/api/orchestrations/${encodeURIComponent(String(orchestrationId))}`);
+  return parseJsonResponse(response);
+}
+
+export async function answerOrchestrationQuestion(
+  orchestrationId: number,
+  questionId: string,
+  selectedOptionIds: string[],
+  customText = "",
+): Promise<ArcOrchestrationView> {
+  const response = await fetch(
+    `/api/orchestrations/${encodeURIComponent(String(orchestrationId))}/questions/${encodeURIComponent(questionId)}/answer`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ selectedOptionIds, customText }),
+    },
+  );
+  return parseJsonResponse(response);
+}
+
+export async function sendOrchestrationMessage(orchestrationId: number, content: string): Promise<ArcOrchestrationView> {
+  const response = await fetch(`/api/orchestrations/${encodeURIComponent(String(orchestrationId))}/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+  return parseJsonResponse(response);
+}
+
+export async function launchOrchestration(orchestrationId: number, x: number, y: number): Promise<{ orchestration: ArcOrchestrationView; cards: ArcCard[] }> {
+  const response = await fetch(`/api/orchestrations/${encodeURIComponent(String(orchestrationId))}/launch`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ x, y }),
   });
   return parseJsonResponse(response);
 }
