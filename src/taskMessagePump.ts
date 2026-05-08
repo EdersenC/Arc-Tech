@@ -131,13 +131,14 @@ export class TaskMessagePump {
 
         const diffStat = await this.git.commitTaskChanges(task, `Codex task ${taskDisplayNumber(task)} follow-up`);
         const pullRequestUrl = await this.createPullRequestIfPossible(task, result.finalSummary, diffStat);
-        const completionSummary = buildCompletionSummary(result.finalSummary, pullRequestUrl);
+        const retainedPullRequestUrl = pullRequestUrl ?? task.pullRequestUrl ?? task.prUrl;
+        const completionSummary = buildCompletionSummary(result.finalSummary, retainedPullRequestUrl);
         this.tasks.updateMessagesStatus(queued.map((message) => message.id), "processed");
         task = this.tasks.update(task.id, {
           status: "WAITING_REVIEW",
           codexThreadId: result.codexThreadId ?? task.codexThreadId,
-          pullRequestUrl,
-          prUrl: pullRequestUrl,
+          pullRequestUrl: retainedPullRequestUrl,
+          prUrl: retainedPullRequestUrl,
           finalSummary: `${completionSummary}\n\nDiff stat:\n${diffStat}`,
           completionSummary,
           error: null,
@@ -160,12 +161,13 @@ export class TaskMessagePump {
               const recoverySummary =
                 "Codex hit a sandboxed Git metadata write while trying to commit or push, but the orchestrator committed the file changes outside the sandbox.";
               const pullRequestUrl = await this.createPullRequestIfPossible(task, recoverySummary, diffStat);
-              const completionSummary = buildCompletionSummary(recoverySummary, pullRequestUrl);
+              const retainedPullRequestUrl = pullRequestUrl ?? task.pullRequestUrl ?? task.prUrl;
+              const completionSummary = buildCompletionSummary(recoverySummary, retainedPullRequestUrl);
               this.tasks.updateMessagesStatus(queued.map((queuedMessage) => queuedMessage.id), "processed");
               task = this.tasks.update(task.id, {
                 status: "WAITING_REVIEW",
-                pullRequestUrl,
-                prUrl: pullRequestUrl,
+                pullRequestUrl: retainedPullRequestUrl,
+                prUrl: retainedPullRequestUrl,
                 finalSummary: `${completionSummary}\n\nDiff stat:\n${diffStat}`,
                 completionSummary,
                 error: null,

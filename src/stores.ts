@@ -259,6 +259,22 @@ export class TaskStore {
     return rows.map(mapTask);
   }
 
+  listTasksWithPullRequests(): Task[] {
+    const rows = this.db
+      .prepare(
+        `
+        SELECT *
+        FROM tasks
+        WHERE COALESCE(pull_request_url, pr_url) IS NOT NULL
+          AND COALESCE(pull_request_url, pr_url) <> ''
+          AND status NOT IN ('ABANDONED', 'CANCELED')
+        ORDER BY datetime(updated_at) DESC, id DESC
+      `,
+      )
+      .all() as TaskRow[];
+    return rows.map(mapTask);
+  }
+
   update(
     id: number,
     fields: Partial<

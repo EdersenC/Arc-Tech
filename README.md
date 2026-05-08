@@ -23,6 +23,8 @@ WORKSPACES_DIR=./workspaces
 CODEX_BIN=codex
 ENABLE_MESSAGE_CONTENT_INTENT=false
 GITHUB_PR_ENABLED=false
+GITHUB_PR_FEEDBACK_ENABLED=false
+GITHUB_PR_FEEDBACK_POLL_MS=60000
 GITHUB_BASE_BRANCH=main
 GITHUB_REMOTE=origin
 ```
@@ -194,6 +196,14 @@ Bounds are clamped to a hard minimum of 2 and hard maximum of 10. Children auto-
 ## Optional PRs
 
 PR URLs are optional. With `GITHUB_PR_ENABLED=false`, tasks still commit locally and report branch/worktree paths. With GitHub PRs enabled and `gh` configured, the app can push task branches and create or update PRs. Missing GitHub integration does not fail an orchestration.
+
+## PR Feedback Worker
+
+When `GITHUB_PR_FEEDBACK_ENABLED=true`, the runner polls tracked open PRs created by agent tasks. The worker uses `gh api` to read PR issue comments, review summaries, and inline review comments. New feedback is deduped in SQLite, queued as a normal task follow-up, and the owning agent task is automatically enqueued.
+
+The worker posts a short visibility update in the child task thread and parent orchestration thread when applicable. Codex receives only the task follow-up prompt in its existing worktree and branch; it does not receive Discord credentials and does not call Discord APIs.
+
+Polling defaults to the PR feature flag. Set `GITHUB_PR_FEEDBACK_POLL_MS` to control the interval.
 
 ## arcctl and Skills
 
