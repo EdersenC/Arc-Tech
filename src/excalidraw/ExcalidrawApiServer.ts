@@ -6,7 +6,17 @@ import type { ProjectStore, TaskStore } from "../stores.js";
 import type { ImplementService } from "../tasks/ImplementService.js";
 import type { Project, Task } from "../types.js";
 import { ExcalidrawCardsRepo } from "./ExcalidrawCardsRepo.js";
-import { mapTaskStatus, oneLine, taskCardLabel, taskTitle, type ExcalidrawCard, type ExcalidrawTaskView } from "./types.js";
+import { buildTaskProgress } from "./taskProgress.js";
+import {
+  mapTaskStatus,
+  oneLine,
+  taskCardLabelWithProgress,
+  taskCardSize,
+  taskTitle,
+  type ExcalidrawCard,
+  type ExcalidrawTaskProgress,
+  type ExcalidrawTaskView,
+} from "./types.js";
 
 interface ApiDeps {
   config: AppConfig;
@@ -156,6 +166,7 @@ export class ExcalidrawApiServer {
     const project = this.getExcalidrawProject();
     const title = `Plan Card - ${oneLine(command.prompt, 54)}`;
     const label = [`Plan Card`, `Status: planned`, `Command: ${oneLine(command.prompt, 110)}`].join("\n");
+    const size = taskCardSize(label);
     const card = this.deps.cards.createPlanCard({
       projectId: project.id,
       command: command.original,
@@ -163,6 +174,8 @@ export class ExcalidrawApiServer {
       label,
       x: numberField(body, "x") ?? nextCardX(Date.now()),
       y: numberField(body, "y") ?? nextCardY(Date.now()),
+      width: numberField(body, "width") ?? size.width,
+      height: numberField(body, "height") ?? size.height,
     });
     this.sendJson(res, 201, {
       taskId: null,
@@ -215,7 +228,8 @@ export class ExcalidrawApiServer {
 
   private taskView(task: Task): ExcalidrawTaskView {
     const storedCard = this.deps.cards.findByTaskId(task.id);
-    const card = storedCard ? cardViewForTask(storedCard, task) : null;
+    const progress = this.taskProgress(task);
+    const card = storedCard ? cardViewForTask(storedCard, task, progress) : null;
     return {
       taskId: String(task.id),
       numericTaskId: task.id,
@@ -224,7 +238,8 @@ export class ExcalidrawApiServer {
       title: taskTitle(task),
       branch: task.taskBranch,
       prompt: task.prompt,
-      card: card ? this.hydrateCard(card) : null,
+      progress,
+      card,
       createdAt: task.createdAt,
       updatedAt: task.updatedAt,
     };
@@ -238,7 +253,11 @@ export class ExcalidrawApiServer {
     if (!card.taskId) return card;
     const task = this.deps.tasks.getById(card.taskId);
     if (!task) return card;
-    return cardViewForTask(card, task);
+    return cardViewForTask(card, task, this.taskProgress(task));
+  }
+
+  private taskProgress(task: Task): ExcalidrawTaskProgress {
+    return buildTaskProgress(task, this.deps.tasks.listRecentCodexActivity(task.id, 12), this.deps.tasks.getTaskMessageStatusCounts(task.id));
   }
 
   private async serveStatic(pathname: string, res: ServerResponse): Promise<void> {
@@ -349,13 +368,18 @@ function contentType(fullPath: string): string {
   return "application/octet-stream";
 }
 
-function cardViewForTask(card: ExcalidrawCard, task: Task): ExcalidrawCard {
+function cardViewForTask(card: ExcalidrawCard, task: Task, progress: ExcalidrawTaskProgress): ExcalidrawCard {
+  const label = taskCardLabelWithProgress(task, progress);
+  const size = taskCardSize(label, card);
   return {
     ...card,
     title: taskTitle(task),
-    label: taskCardLabel(task),
+    label,
     status: mapTaskStatus(task.status),
     branch: task.taskBranch,
+    width: size.width,
+    height: size.height,
+    progress,
   };
 }
 

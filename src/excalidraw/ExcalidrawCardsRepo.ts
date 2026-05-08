@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { Task } from "../types.js";
-import { mapTaskStatus, taskCardLabel, taskTitle, type ExcalidrawCard, type ExcalidrawCardMode } from "./types.js";
+import { mapTaskStatus, taskCardLabel, taskCardSize, taskTitle, type ExcalidrawCard, type ExcalidrawCardMode } from "./types.js";
 
 type ExcalidrawCardRow = {
   id: string;
@@ -38,6 +38,8 @@ export class ExcalidrawCardsRepo {
 
   createForTask(task: Task, input: { command: string; x?: number; y?: number }): ExcalidrawCard {
     const id = randomUUID();
+    const label = taskCardLabel(task);
+    const size = taskCardSize(label);
     this.db
       .prepare(
         `
@@ -45,7 +47,7 @@ export class ExcalidrawCardsRepo {
           id, task_id, project_id, source, mode, command, title, label, status, branch, x, y, width, height
         )
         VALUES (
-          @id, @taskId, @projectId, 'excalidraw', 'direct_agent', @command, @title, @label, @status, @branch, @x, @y, 360, 180
+          @id, @taskId, @projectId, 'excalidraw', 'direct_agent', @command, @title, @label, @status, @branch, @x, @y, @width, @height
         )
       `,
       )
@@ -55,11 +57,13 @@ export class ExcalidrawCardsRepo {
         projectId: task.projectId,
         command: input.command,
         title: taskTitle(task),
-        label: taskCardLabel(task),
+        label,
         status: mapTaskStatus(task.status),
         branch: task.taskBranch,
         x: input.x ?? 80,
         y: input.y ?? 80,
+        width: size.width,
+        height: size.height,
       });
     const card = this.findById(id);
     if (!card) {
@@ -127,11 +131,14 @@ export class ExcalidrawCardsRepo {
       status: mapTaskStatus(task.status),
       branch: task.taskBranch,
     };
+    const size = taskCardSize(next.label, existing);
     if (
       existing.title === next.title &&
       existing.label === next.label &&
       existing.status === next.status &&
-      existing.branch === next.branch
+      existing.branch === next.branch &&
+      existing.width === size.width &&
+      existing.height === size.height
     ) {
       return existing;
     }
@@ -143,6 +150,8 @@ export class ExcalidrawCardsRepo {
             label = @label,
             status = @status,
             branch = @branch,
+            width = @width,
+            height = @height,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = @id
       `,
@@ -150,6 +159,8 @@ export class ExcalidrawCardsRepo {
       .run({
         id: existing.id,
         ...next,
+        width: size.width,
+        height: size.height,
       });
     return this.findById(existing.id);
   }

@@ -18,8 +18,28 @@ export interface ExcalidrawCard {
   y: number;
   width: number;
   height: number;
+  progress?: ExcalidrawTaskProgress;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ExcalidrawTaskProgress {
+  rawStatus: TaskStatus;
+  phase: string;
+  activity: string;
+  currentCommand: string | null;
+  changedFiles: string[];
+  recentEvents: string[];
+  messageCounts: {
+    queued: number;
+    processing: number;
+    processed: number;
+    failed: number;
+  };
+  error: string | null;
+  summary: string | null;
+  pullRequestUrl: string | null;
+  lastActivityAt: string;
 }
 
 export interface ExcalidrawTaskView {
@@ -30,6 +50,7 @@ export interface ExcalidrawTaskView {
   title: string;
   branch: string | null;
   prompt: string;
+  progress: ExcalidrawTaskProgress;
   card: ExcalidrawCard | null;
   createdAt: string;
   updatedAt: string;
@@ -47,12 +68,53 @@ export function taskTitle(task: Task): string {
 }
 
 export function taskCardLabel(task: Task): string {
-  return [
+  return taskCardLabelWithProgress(task);
+}
+
+export function taskCardLabelWithProgress(task: Task, progress?: ExcalidrawTaskProgress): string {
+  const status = progress ? `${mapTaskStatus(task.status)} (${task.status})` : mapTaskStatus(task.status);
+  const lines = [
     taskTitle(task),
-    `Status: ${mapTaskStatus(task.status)}`,
+    `Status: ${status}`,
+    progress?.phase ? `Phase: ${oneLine(progress.phase, 96)}` : null,
+    progress?.activity ? `Activity: ${oneLine(progress.activity, 112)}` : null,
+    progress?.currentCommand ? `Command now: ${oneLine(progress.currentCommand, 104)}` : null,
+    progress?.changedFiles.length ? `Changed: ${oneLine(progress.changedFiles.join(", "), 112)}` : null,
+    progress ? `Messages: ${messageCountsLine(progress.messageCounts)}` : null,
+    progress?.recentEvents.length ? `Events: ${oneLine(progress.recentEvents.join(" -> "), 112)}` : null,
+    progress?.error ? `Error: ${oneLine(progress.error, 112)}` : null,
+    progress?.summary ? `Summary: ${oneLine(progress.summary, 112)}` : null,
+    progress?.pullRequestUrl ? `PR: ${oneLine(progress.pullRequestUrl, 112)}` : null,
     `Branch: ${task.taskBranch ?? "not created"}`,
-    `Command: ${oneLine(task.prompt, 96)}`,
-  ].join("\n");
+    progress?.lastActivityAt ? `Updated: ${compactTimestamp(progress.lastActivityAt)}` : null,
+    `Command: ${oneLine(task.prompt, 112)}`,
+  ];
+  return lines.filter((line): line is string => Boolean(line)).join("\n");
+}
+
+export function taskCardSize(label: string, existing?: Pick<ExcalidrawCard, "width" | "height">): { width: number; height: number } {
+  const lines = label.split(/\r?\n/);
+  const longest = lines.reduce((max, line) => Math.max(max, line.length), 0);
+  const neededWidth = Math.min(760, Math.max(420, Math.ceil(longest * 7.5 + 52)));
+  const neededHeight = Math.min(720, Math.max(210, Math.ceil(lines.length * 25 + 54)));
+  return {
+    width: Math.max(existing?.width ?? 0, neededWidth),
+    height: Math.max(existing?.height ?? 0, neededHeight),
+  };
+}
+
+function messageCountsLine(counts: ExcalidrawTaskProgress["messageCounts"]): string {
+  const parts = [
+    counts.queued ? `${counts.queued} queued` : null,
+    counts.processing ? `${counts.processing} processing` : null,
+    counts.processed ? `${counts.processed} done` : null,
+    counts.failed ? `${counts.failed} failed` : null,
+  ].filter(Boolean);
+  return parts.length ? parts.join(" / ") : "none";
+}
+
+function compactTimestamp(value: string): string {
+  return value.replace("T", " ").replace(/\.\d{3}Z$/, "Z").slice(0, 19);
 }
 
 export function oneLine(value: string, max: number): string {

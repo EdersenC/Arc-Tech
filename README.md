@@ -151,7 +151,7 @@ Modes:
 - **Direct Agent** calls `POST /api/implement`, creates the same SQLite task/worktree/queued message path as Discord, starts the task immediately, and draws a task card on the canvas.
 - **Plan Card Only** persists a visual planning card and does not start Codex.
 
-Every Arc-generated Excalidraw element includes `customData.arc` with the card id, source, command, status, and task id when one exists. The UI polls `GET /api/tasks` every few seconds and updates card text/status from SQLite. Moving or deleting cards is visual-only for the MVP and never deletes the real task.
+Every Arc-generated Excalidraw element includes `customData.arc` with the card id, source, command, status, task id, and latest progress when one exists. The UI polls `GET /api/tasks` every few seconds and updates card text/status from SQLite. Direct agent cards grow as runner information arrives, including phase, latest activity, command events, changed files, queue counts, summaries, errors, and PR links. Moving or deleting cards is visual-only for the MVP and never deletes the real task.
 
 The Excalidraw API intentionally does not log in to Discord and does not expose Discord tokens. Execution still flows through `ImplementService`, `TaskMessagePump`, `CodexRunner`, and `GitManager`; the canvas never runs shell commands directly.
 

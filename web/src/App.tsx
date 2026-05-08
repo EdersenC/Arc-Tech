@@ -22,6 +22,9 @@ type ArcElement = {
       source?: string;
       command?: string;
       status?: string;
+      phase?: string;
+      activity?: string;
+      lastActivityAt?: string;
     };
   };
 };
@@ -51,7 +54,7 @@ export default function App() {
     const response = await listTasks();
     applyCardsToScene(response.cards);
     setError(null);
-    setStatus(`Loaded ${response.cards.length} Arc card${response.cards.length === 1 ? "" : "s"}`);
+    setStatus(taskStatusLine(response));
   }, [applyCardsToScene]);
 
   useEffect(() => {
@@ -179,6 +182,9 @@ function cardsToElements(cards: ArcCard[]) {
           source: "excalidraw",
           command: "/implement",
           status: card.status,
+          phase: card.progress?.phase,
+          activity: card.progress?.activity,
+          lastActivityAt: card.progress?.lastActivityAt,
         },
       };
       return [
@@ -206,7 +212,7 @@ function cardsToElements(cards: ArcCard[]) {
           width: card.width - 36,
           height: card.height - 36,
           text: card.label,
-          fontSize: 18,
+          fontSize: 16,
           fontFamily: 1,
           textAlign: "left",
           verticalAlign: "top",
@@ -279,4 +285,30 @@ function backgroundFor(status: string): string {
   if (status === "failed") return "#fee2e2";
   if (status === "planned") return "#ede9fe";
   return "#f8fafc";
+}
+
+function taskStatusLine(response: { tasks: Array<{ status: string; progress?: { lastActivityAt?: string } }>; cards: ArcCard[] }): string {
+  const running = response.tasks.filter((task) => task.status === "running").length;
+  const queued = response.tasks.filter((task) => task.status === "queued").length;
+  const failed = response.tasks.filter((task) => task.status === "failed").length;
+  const completed = response.tasks.filter((task) => task.status === "completed").length;
+  const latest = latestActivity(response.cards);
+  const parts = [
+    `${response.cards.length} card${response.cards.length === 1 ? "" : "s"}`,
+    running ? `${running} running` : null,
+    queued ? `${queued} queued` : null,
+    completed ? `${completed} completed` : null,
+    failed ? `${failed} failed` : null,
+    latest ? `last activity ${latest}` : null,
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+
+function latestActivity(cards: ArcCard[]): string | null {
+  const latest = cards
+    .map((card) => card.progress?.lastActivityAt ?? card.updatedAt)
+    .filter(Boolean)
+    .sort()
+    .at(-1);
+  return latest ? latest.replace("T", " ").slice(0, 19) : null;
 }

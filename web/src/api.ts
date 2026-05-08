@@ -16,8 +16,28 @@ export interface ArcCard {
   y: number;
   width: number;
   height: number;
+  progress?: ArcTaskProgress;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ArcTaskProgress {
+  rawStatus: string;
+  phase: string;
+  activity: string;
+  currentCommand: string | null;
+  changedFiles: string[];
+  recentEvents: string[];
+  messageCounts: {
+    queued: number;
+    processing: number;
+    processed: number;
+    failed: number;
+  };
+  error: string | null;
+  summary: string | null;
+  pullRequestUrl: string | null;
+  lastActivityAt: string;
 }
 
 export interface ArcTask {
@@ -28,6 +48,7 @@ export interface ArcTask {
   title: string;
   branch: string | null;
   prompt: string;
+  progress: ArcTaskProgress;
   card: ArcCard | null;
   createdAt: string;
   updatedAt: string;
