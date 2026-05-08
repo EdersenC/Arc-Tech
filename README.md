@@ -1,6 +1,6 @@
 # Discord Codex Runner
 
-TypeScript Discord Gateway bot that creates a task thread with `/implement`, stores task-thread chat in SQLite, and sends queued task messages to sandboxed non-interactive Codex runs in the task worktree.
+TypeScript Discord Gateway bot and Excalidraw command surface that create implementation tasks, store task chat/state in SQLite, and send queued messages to sandboxed non-interactive Codex runs in isolated task worktrees.
 
 ## Requirements
 
@@ -27,9 +27,16 @@ GITHUB_PR_FEEDBACK_ENABLED=false
 GITHUB_PR_FEEDBACK_POLL_MS=60000
 GITHUB_BASE_BRANCH=main
 GITHUB_REMOTE=origin
+EXCALIDRAW_HOST=127.0.0.1
+EXCALIDRAW_PORT=8787
+EXCALIDRAW_CORS_ORIGIN=*
+EXCALIDRAW_PROJECT_GUILD_ID=excalidraw
+EXCALIDRAW_PROJECT_CHANNEL_ID=default
+EXCALIDRAW_PROJECT_NAME=Excalidraw
 ```
 
 `DISCORD_GUILD_ID` is required because commands are registered as guild commands.
+The Excalidraw API can run without Discord credentials by using `loadConfig({ requireDiscord: false })`.
 
 ## Codebase Map
 
@@ -41,10 +48,13 @@ The runtime is intentionally small and centered on the Discord Gateway client in
 - `src/git.ts` manages project repositories, task worktrees, task commits, branch pushes, PR creation, merge, and cleanup.
 - `src/taskControlPanel.ts` renders and handles the Discord buttons and select menus for each task.
 - `src/taskMessagePump.ts` serializes queued task-thread messages into Codex runs and records completion/failure state.
+- `src/tasks/ImplementService.ts` owns the shared `/implement` task creation, worktree setup, message queueing, and optional start path used by Discord and Excalidraw.
 - `src/codexRunner.ts` shells out to `codex exec --json`; `src/codex/*` parses and routes the JSONL event stream.
 - `src/progress/TaskProgressService.ts` keeps the live status message updated and posts major task events back to Discord.
 - `src/orchestrations/*` owns the reusable planner-to-agent-fleet workflow behind `/orchestrate`.
-- `src/tasks/TaskService.ts` centralizes implementation task creation so `/implement` and orchestration children use the same backend path.
+- `src/tasks/TaskService.ts` centralizes low-level implementation task rows so `/implement` and orchestration children use the same backend path.
+- `src/excalidraw/*` owns the HTTP API and persisted visual task-card state for the Excalidraw UI adapter.
+- `web/` contains the React + `@excalidraw/excalidraw` MVP canvas.
 - `src/cli/arcctl.ts` writes optional local bridge requests/events under `.codex-bridge/` for future custom UI or skill workflows.
 
 ## Discord Setup
@@ -108,6 +118,24 @@ Run compiled JavaScript:
 npm start
 ```
 
+Run the Excalidraw API:
+
+```bash
+npm run excalidraw:api
+```
+
+Run the Excalidraw web UI in development:
+
+```bash
+npm run excalidraw:web
+```
+
+Build the Excalidraw web UI:
+
+```bash
+npm run excalidraw:build
+```
+
 ## Slash Commands
 
 - `/implement msg:<text>` creates a SQLite task, creates an isolated git worktree and branch, creates a Discord task thread, stores the request, and posts task controls. Codex does not start until you press **Start**.
@@ -115,6 +143,27 @@ npm start
 - `/status` shows the current channel project, remote state, repo path, and recent tasks.
 
 Task numbers shown in Discord are local to each project/channel. A new project starts at task `#1` even though SQLite keeps a separate internal global row id for component routing.
+
+## Excalidraw MVP
+
+Excalidraw is a second UI adapter for the same implementation runner. Start the API with `npm run excalidraw:api` and the Vite UI with `npm run excalidraw:web`, then open the Vite URL.
+
+The command panel accepts:
+
+```text
+/implement Add a health check endpoint to the API
+```
+
+Modes:
+
+- **Direct Agent** calls `POST /api/implement`, creates the same SQLite task/worktree/queued message path as Discord, starts the task immediately, and draws a task card on the canvas.
+- **Plan Card Only** persists a visual planning card and does not start Codex.
+
+Every Arc-generated Excalidraw element includes `customData.arc` with the card id, source, command, status, and task id when one exists. The UI polls `GET /api/tasks` every few seconds and updates card text/status from SQLite. Moving or deleting cards is visual-only for the MVP and never deletes the real task.
+
+The Excalidraw API intentionally does not log in to Discord and does not expose Discord tokens. Execution still flows through `ImplementService`, `TaskMessagePump`, `CodexRunner`, and `GitManager`; the canvas never runs shell commands directly.
+
+MVP limitations: only `/implement` is supported, there is no visual `/orchestrate` yet, collaboration is not enabled, and task controls such as diff/merge/cancel remain in the existing Discord task UI for now.
 
 ## Project Git Remote
 
@@ -142,6 +191,7 @@ The bot keeps durable state in SQLite at `DATABASE_PATH`. The schema contains:
 - `orchestrations`: parent planner rooms, bounds, final AgentFleetPlan JSON, and status.
 - `orchestration_agents`: child agent rows linked to visible task threads, branches, worktrees, summaries, and optional PR URLs.
 - `orchestration_messages`: parent-thread planner conversation history.
+- `excalidraw_cards`: persisted visual cards, linked task ids, canvas position, label, branch, and status for the Excalidraw UI.
 
 Project files live under `WORKSPACES_DIR/<guild>/<project-slug>-<channel-id>/` with a `repo/` base checkout and isolated task worktrees in `worktrees/task-<n>/`. Task branches use `codex/task-<n>`, where `<n>` is the project-local task number shown in Discord.
 

@@ -194,3 +194,25 @@ CREATE TABLE IF NOT EXISTS codex_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_codex_events_task ON codex_events(task_id, created_at);
+
+CREATE TABLE IF NOT EXISTS excalidraw_cards (
+  id TEXT PRIMARY KEY,
+  task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+  project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  source TEXT NOT NULL DEFAULT 'excalidraw',
+  mode TEXT NOT NULL,
+  command TEXT NOT NULL,
+  title TEXT NOT NULL,
+  label TEXT NOT NULL,
+  status TEXT NOT NULL,
+  branch TEXT,
+  x REAL NOT NULL DEFAULT 80,
+  y REAL NOT NULL DEFAULT 80,
+  width REAL NOT NULL DEFAULT 360,
+  height REAL NOT NULL DEFAULT 180,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_excalidraw_cards_task ON excalidraw_cards(task_id);
+CREATE INDEX IF NOT EXISTS idx_excalidraw_cards_project ON excalidraw_cards(project_id, updated_at);
