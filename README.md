@@ -118,22 +118,10 @@ Run compiled JavaScript:
 npm start
 ```
 
-Run the Excalidraw API:
+Run the Excalidraw MVP:
 
 ```bash
-npm run excalidraw:api
-```
-
-Run the Excalidraw web UI in development:
-
-```bash
-npm run excalidraw:web
-```
-
-Build the Excalidraw web UI:
-
-```bash
-npm run excalidraw:build
+npm run excalidraw
 ```
 
 ## Slash Commands
@@ -146,7 +134,7 @@ Task numbers shown in Discord are local to each project/channel. A new project s
 
 ## Excalidraw MVP
 
-Excalidraw is a second UI adapter for the same implementation runner. Start the API with `npm run excalidraw:api` and the Vite UI with `npm run excalidraw:web`, then open the Vite URL.
+Excalidraw is a second UI adapter for the same implementation runner. Start it with `npm run excalidraw`, then open the Vite URL printed in the terminal. The single startup command launches both the API server and the Vite canvas UI.
 
 The command panel accepts:
 

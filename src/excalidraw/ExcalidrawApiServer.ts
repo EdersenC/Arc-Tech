@@ -257,7 +257,7 @@ export class ExcalidrawApiServer {
         await this.serveStatic("/", res);
         return;
       }
-      this.sendJson(res, 404, { error: "Web UI build not found. Run npm run excalidraw:build or use npm run excalidraw:web." });
+      this.sendJson(res, 404, { error: "Web UI build not found. Run npm run build or use npm run excalidraw." });
     }
   }
 
