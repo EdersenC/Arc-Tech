@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { loadConfig } from "./config.js";
+import { dropSudoPrivilegesForLocalServer } from "./runtimeUser.js";
 
 type ChildName = "api" | "web";
 
@@ -11,6 +12,8 @@ interface ChildSpec {
 
 const children: ChildProcess[] = [];
 let shuttingDown = false;
+
+dropSudoPrivilegesForLocalServer();
 const config = loadConfig({ requireDiscord: false });
 
 const specs: ChildSpec[] = [
@@ -21,6 +24,7 @@ const specs: ChildSpec[] = [
 console.log("Starting Arc-Tech Excalidraw MVP...");
 console.log(`API: http://${config.excalidrawHost}:${config.excalidrawPort}`);
 console.log("UI:  http://127.0.0.1:5173");
+console.log(`Workspaces: ${config.excalidrawWorkspacesDir}`);
 
 for (const spec of specs) {
   const child = spawn(spec.command, spec.args, {

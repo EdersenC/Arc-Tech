@@ -8,14 +8,17 @@ import { ExcalidrawCardsRepo } from "./excalidraw/ExcalidrawCardsRepo.js";
 import { GitManager } from "./git.js";
 import { GitHubPRService } from "./github/GitHubPRService.js";
 import { TaskProgressService } from "./progress/TaskProgressService.js";
+import { dropSudoPrivilegesForLocalServer } from "./runtimeUser.js";
 import { ProjectStore, TaskStore } from "./stores.js";
 import { TaskMessagePump } from "./taskMessagePump.js";
 import { ImplementService } from "./tasks/ImplementService.js";
 import { TaskService } from "./tasks/TaskService.js";
 
+dropSudoPrivilegesForLocalServer();
+
 const config = loadConfig({ requireDiscord: false });
 const database = new AppDatabase(config.databasePath);
-const projects = new ProjectStore(database.db, config.workspacesDir);
+const projects = new ProjectStore(database.db, config.excalidrawWorkspacesDir);
 const tasks = new TaskStore(database.db);
 const cards = new ExcalidrawCardsRepo(database.db);
 const git = new GitManager();

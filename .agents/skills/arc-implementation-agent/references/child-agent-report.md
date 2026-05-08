@@ -17,7 +17,4 @@ Known risks:
 
 Branch:
 codex/orch-<id>/agent-<index>-<slug>
-
-PR URL:
-not created
 ```

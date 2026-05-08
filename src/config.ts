@@ -19,6 +19,7 @@ export interface AppConfig {
   excalidrawHost: string;
   excalidrawPort: number;
   excalidrawCorsOrigin: string;
+  excalidrawWorkspacesDir: string;
   excalidrawProjectGuildId: string;
   excalidrawProjectChannelId: string;
   excalidrawProjectName: string;
@@ -42,6 +43,9 @@ export function loadConfig(options: { requireDiscord?: boolean } = {}): AppConfi
     excalidrawHost: process.env.EXCALIDRAW_HOST || "127.0.0.1",
     excalidrawPort: numberEnv("EXCALIDRAW_PORT", 8787),
     excalidrawCorsOrigin: process.env.EXCALIDRAW_CORS_ORIGIN || "http://127.0.0.1:5173,http://localhost:5173",
+    excalidrawWorkspacesDir: path.resolve(
+      process.env.EXCALIDRAW_WORKSPACES_DIR || path.join(process.env.HOME || ".", ".arc-tech", "excalidraw-workspaces"),
+    ),
     excalidrawProjectGuildId: process.env.EXCALIDRAW_PROJECT_GUILD_ID || "excalidraw",
     excalidrawProjectChannelId: process.env.EXCALIDRAW_PROJECT_CHANNEL_ID || "default",
     excalidrawProjectName: process.env.EXCALIDRAW_PROJECT_NAME || "Excalidraw",

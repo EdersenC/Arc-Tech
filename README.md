@@ -30,6 +30,7 @@ GITHUB_REMOTE=origin
 EXCALIDRAW_HOST=127.0.0.1
 EXCALIDRAW_PORT=8787
 EXCALIDRAW_CORS_ORIGIN=http://127.0.0.1:5173,http://localhost:5173
+EXCALIDRAW_WORKSPACES_DIR=~/.arc-tech/excalidraw-workspaces
 EXCALIDRAW_PROJECT_GUILD_ID=excalidraw
 EXCALIDRAW_PROJECT_CHANNEL_ID=default
 EXCALIDRAW_PROJECT_NAME=Excalidraw
@@ -38,6 +39,7 @@ EXCALIDRAW_PROJECT_NAME=Excalidraw
 `DISCORD_GUILD_ID` is required because commands are registered as guild commands.
 The Excalidraw API can run without Discord credentials by using `loadConfig({ requireDiscord: false })`.
 `EXCALIDRAW_CORS_ORIGIN` is a comma-separated allowlist. Use `*` only in a trusted local environment.
+`EXCALIDRAW_WORKSPACES_DIR` defaults outside this repo so local Codex sandbox mounts do not depend on the Arc-Tech checkout path.
 
 ## Codebase Map
 
@@ -136,6 +138,7 @@ Task numbers shown in Discord are local to each project/channel. A new project s
 ## Excalidraw MVP
 
 Excalidraw is a second UI adapter for the same implementation runner. Start it with `npm run excalidraw`, then open the Vite URL printed in the terminal. The single startup command launches both the API server and the Vite canvas UI.
+If launched with `sudo`, the Excalidraw process drops back to the original user before creating task worktrees so Codex does not inherit root-owned workspaces.
 
 The command panel accepts:
 
@@ -329,11 +332,11 @@ For MVP continuation, the app runs a new `codex exec` in the same task worktree 
 
 Each Codex process gets a private writable temp directory at `.codex-tmp/` inside the task worktree. The runner exports `TMPDIR`, `TMP`, `TEMP`, and `XDG_RUNTIME_DIR` to that path so Codex/bubblewrap does not depend on a shared `/tmp` lock directory. `.codex-tmp/` is excluded from task commits.
 
-Implementation tasks run with the task worktree as `--cd` and the base repo Git metadata directory added with `--add-dir <projectRepo>/.git`. This keeps file edits scoped to the task worktree while allowing Git commands in that worktree to update their real worktree metadata. The runner also enables workspace-write network access so Codex can run `git push` and `gh pr create` from the task branch without using `--dangerously-bypass-approvals-and-sandbox`.
+Implementation tasks run with the task worktree as `--cd`. Codex edits files only inside that isolated worktree and is instructed not to run `git add`, `git commit`, `git push`, or `gh pr create`. The TypeScript runner owns Git metadata writes and PR creation outside the Codex sandbox.
 
-Codex's primary completion goal for implementation tasks is to finish with a clear summary, committed task branch, and PR URL when PR creation is available. It is instructed not to merge to main or edit files in the base repo or other task worktrees.
+Codex's primary completion goal for implementation tasks is to finish the file changes and provide a clear summary. It is instructed not to merge to main or edit files in the base repo or other task worktrees.
 
-After Codex finishes, the orchestrator still runs a recovery/fallback path:
+After Codex finishes, the orchestrator runs the Git lifecycle path:
 
 - removes `.codex-tmp/`
 - commits any remaining uncommitted task changes
