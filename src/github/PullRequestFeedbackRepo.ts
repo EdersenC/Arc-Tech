@@ -318,6 +318,21 @@ export class PullRequestFeedbackRepo {
       lastError: row.last_error,
     };
   }
+
+  listEventsByTask(taskId: number, limit = 100): PullRequestFeedbackEvent[] {
+    const rows = this.db
+      .prepare(
+        `
+        SELECT *
+        FROM pull_request_feedback_events
+        WHERE task_id = ?
+        ORDER BY datetime(created_at) ASC, id ASC
+        LIMIT ?
+      `,
+      )
+      .all(taskId, Math.max(1, Math.min(300, Math.floor(limit)))) as PullRequestFeedbackEventRow[];
+    return rows.map(mapFeedback);
+  }
 }
 
 function trackedParams(task: Task, identity: PullRequestIdentity, prUrl: string) {

@@ -120,6 +120,21 @@ export class ExcalidrawCardsRepo {
     return rows.map(mapCard);
   }
 
+  listByProject(projectId: number, limit = 50): ExcalidrawCard[] {
+    const rows = this.db
+      .prepare(
+        `
+        SELECT *
+        FROM excalidraw_cards
+        WHERE project_id = ?
+        ORDER BY datetime(updated_at) DESC, id DESC
+        LIMIT ?
+      `,
+      )
+      .all(projectId, limit) as ExcalidrawCardRow[];
+    return rows.map(mapCard);
+  }
+
   updateFromTask(task: Task): ExcalidrawCard | null {
     const existing = this.findByTaskId(task.id);
     if (!existing) {
@@ -210,6 +225,7 @@ function mapCard(row: ExcalidrawCardRow): ExcalidrawCard {
     y: row.y,
     width: row.width,
     height: row.height,
+    links: [],
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

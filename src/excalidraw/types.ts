@@ -3,6 +3,11 @@ import type { Task, TaskStatus } from "../types.js";
 export type ExcalidrawCardMode = "direct_agent" | "plan_card_only";
 export type ExcalidrawTaskStatus = "queued" | "running" | "completed" | "failed" | "planned";
 
+export interface ExcalidrawCardLink {
+  label: string;
+  url: string;
+}
+
 export interface ExcalidrawCard {
   id: string;
   taskId: number | null;
@@ -18,6 +23,7 @@ export interface ExcalidrawCard {
   y: number;
   width: number;
   height: number;
+  links: ExcalidrawCardLink[];
   progress?: ExcalidrawTaskProgress;
   createdAt: string;
   updatedAt: string;
@@ -96,7 +102,7 @@ export function taskCardLabelWithProgress(task: Task, progress?: ExcalidrawTaskP
     progress?.recentEvents.length ? `Events: ${oneLine(progress.recentEvents.join(" -> "), 112)}` : null,
     progress?.error ? `Error: ${oneLine(progress.error, 112)}` : null,
     progress?.summary ? `Summary: ${oneLine(progress.summary, 112)}` : null,
-    progress?.pullRequestUrl ? `PR: ${oneLine(progress.pullRequestUrl, 112)}` : null,
+    progress?.pullRequestUrl ? "PR: available" : null,
     `Branch: ${task.taskBranch ?? "not created"}`,
     progress?.lastActivityAt ? `Updated: ${compactTimestamp(progress.lastActivityAt)}` : null,
     `Command: ${oneLine(task.prompt, 112)}`,

@@ -2,6 +2,7 @@ import type { GitManager } from "../git.js";
 import type { ProjectStore, TaskStore } from "../stores.js";
 import type { TaskMessagePump } from "../taskMessagePump.js";
 import type { Effort, Project, SandboxMode, Task, TaskMessage, TaskMode } from "../types.js";
+import { isClosedTaskStatus } from "../threadRouting.js";
 import type { TaskService } from "./TaskService.js";
 
 export type ImplementSourceUi = "discord" | "excalidraw";
@@ -33,6 +34,12 @@ export interface ConfigureProjectRemoteResult {
   project: Project;
   baseBranch: string;
   summary: string;
+}
+
+export interface EnqueueFollowUpResult {
+  task: Task;
+  message: TaskMessage;
+  started: boolean;
 }
 
 export class ImplementService {
@@ -105,6 +112,43 @@ export class ImplementService {
     const updated = this.tasks.update(task.id, { status: "QUEUED", error: null });
     this.pump.enqueue(updated.id);
     return updated;
+  }
+
+  async enqueueFollowUp(input: {
+    task: Task;
+    content: string;
+    requestedBy: string | null;
+    sourceUi: ImplementSourceUi;
+  }): Promise<EnqueueFollowUpResult> {
+    const content = input.content.trim();
+    if (!content) {
+      throw new Error("Follow-up message is required.");
+    }
+
+    let task = input.task;
+    if (isClosedTaskStatus(task.status)) {
+      throw new Error(`Task is closed with status ${task.status}. Create a new /implement task.`);
+    }
+    if (task.status === "WAITING_REMOTE") {
+      throw new Error("Connect the project remote before sending follow-up messages to this task.");
+    }
+    if (task.status === "WAITING_REVIEW" || task.status === "DONE") {
+      task = this.tasks.update(task.id, { status: "QUEUED", error: null });
+    }
+
+    const message = this.tasks.enqueueUserMessage({
+      taskId: task.id,
+      discordMessageId: null,
+      discordAuthorId: input.requestedBy ?? input.sourceUi,
+      content,
+    });
+
+    if (task.status !== "PENDING_START") {
+      this.pump.enqueue(task.id);
+      return { task: this.tasks.getById(task.id) ?? task, message, started: true };
+    }
+
+    return { task, message, started: false };
   }
 
   async configureProjectRemote(project: Project, remoteUrl: string): Promise<ConfigureProjectRemoteResult> {

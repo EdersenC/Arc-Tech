@@ -15,6 +15,7 @@ import {
   taskCardSize,
   taskTitle,
   type ExcalidrawCard,
+  type ExcalidrawCardLink,
   type ExcalidrawTaskProgress,
   type ExcalidrawTaskView,
 } from "./types.js";
@@ -33,6 +34,8 @@ type JsonRecord = Record<string, unknown>;
 interface ExcalidrawProjectView {
   projectId: number;
   projectName: string;
+  projectSlug: string;
+  channelId: string;
   repoPath: string;
   worktreesPath: string;
   remoteStatus: Project["remoteStatus"];
@@ -43,6 +46,7 @@ interface ExcalidrawProjectView {
   githubRemote: string;
   prReady: boolean;
   blockers: string[];
+  taskCount: number;
 }
 
 const STATIC_ROOT = path.resolve(process.cwd(), "dist/web");
@@ -92,8 +96,16 @@ export class ExcalidrawApiServer {
       await this.handleImplement(req, res);
       return;
     }
+    if (url.pathname === "/api/excalidraw/projects" && req.method === "GET") {
+      await this.handleListProjects(res);
+      return;
+    }
+    if (url.pathname === "/api/excalidraw/projects" && req.method === "POST") {
+      await this.handleCreateProject(req, res);
+      return;
+    }
     if (url.pathname === "/api/excalidraw/project" && req.method === "GET") {
-      await this.handleGetProject(res);
+      await this.handleGetProject(url, res);
       return;
     }
     if (url.pathname === "/api/excalidraw/project/remote" && req.method === "POST") {
@@ -109,8 +121,19 @@ export class ExcalidrawApiServer {
       await this.handleGetTask(Number(taskMatch[1]), res);
       return;
     }
+    const taskHistoryMatch = /^\/api\/tasks\/(\d+)\/history$/.exec(url.pathname);
+    if (taskHistoryMatch && req.method === "GET") {
+      await this.handleGetTaskHistory(Number(taskHistoryMatch[1]), res);
+      return;
+    }
+    const taskMessageMatch = /^\/api\/tasks\/(\d+)\/messages$/.exec(url.pathname);
+    if (taskMessageMatch && req.method === "POST") {
+      await this.handleTaskMessage(Number(taskMessageMatch[1]), req, res);
+      return;
+    }
     if (url.pathname === "/api/excalidraw/cards" && req.method === "GET") {
-      this.sendJson(res, 200, { cards: this.hydrateCards(this.deps.cards.listRecent(limitParam(url))) });
+      const project = await this.projectFromQuery(url);
+      this.sendJson(res, 200, { cards: this.hydrateCards(this.deps.cards.listByProject(project.id, limitParam(url))) });
       return;
     }
     if (url.pathname === "/api/excalidraw/cards" && req.method === "POST") {
@@ -152,7 +175,7 @@ export class ExcalidrawApiServer {
       return;
     }
 
-    const project = await this.getSyncedExcalidrawProject();
+    const project = await this.getSyncedExcalidrawProject(await this.projectFromBody(body));
     const projectView = this.projectView(project);
     if (!projectView.prReady) {
       this.sendJson(res, 409, {
@@ -171,11 +194,11 @@ export class ExcalidrawApiServer {
       startImmediately: true,
       allowLocalOnlyWithoutRemote: false,
     });
-    const card = this.deps.cards.createForTask(result.task, {
+    const card = this.hydrateCard(this.deps.cards.createForTask(result.task, {
       command: command.original,
       x: numberField(body, "x") ?? nextCardX(result.task.id),
       y: numberField(body, "y") ?? nextCardY(result.task.id),
-    });
+    }));
     this.sendJson(res, 201, {
       taskId: String(result.task.id),
       status: mapTaskStatus(result.task.status),
@@ -186,8 +209,27 @@ export class ExcalidrawApiServer {
     });
   }
 
-  private async handleGetProject(res: ServerResponse): Promise<void> {
-    const project = await this.getSyncedExcalidrawProject();
+  private async handleListProjects(res: ServerResponse): Promise<void> {
+    const defaultProject = this.getDefaultExcalidrawProject();
+    const listed = this.deps.projects.listByGuildId(this.deps.config.excalidrawProjectGuildId);
+    const projects = listed.some((project) => project.id === defaultProject.id) ? listed : [defaultProject, ...listed];
+    this.sendJson(res, 200, { projects: projects.map((project) => this.projectView(project)) });
+  }
+
+  private async handleCreateProject(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const body = await readJson(req);
+    const name = stringField(body, "name").trim();
+    const channelId = stringField(body, "channelId", "").trim() || undefined;
+    const project = this.deps.projects.getOrCreateNamed({
+      guildId: this.deps.config.excalidrawProjectGuildId,
+      projectName: name,
+      channelId,
+    });
+    this.sendJson(res, 201, { project: this.projectView(project) });
+  }
+
+  private async handleGetProject(url: URL, res: ServerResponse): Promise<void> {
+    const project = await this.getSyncedExcalidrawProject(await this.projectFromQuery(url));
     this.sendJson(res, 200, { project: this.projectView(project) });
   }
 
@@ -199,7 +241,7 @@ export class ExcalidrawApiServer {
       return;
     }
 
-    const project = this.getExcalidrawProject();
+    const project = await this.projectFromBody(body);
     const result = await this.deps.implementService.configureProjectRemote(project, remoteUrl);
     this.sendJson(res, 200, {
       project: this.projectView(result.project),
@@ -220,7 +262,7 @@ export class ExcalidrawApiServer {
     body: JsonRecord,
     res: ServerResponse,
   ): Promise<void> {
-    const project = this.getExcalidrawProject();
+    const project = await this.projectFromBody(body);
     const title = `Plan Card - ${oneLine(command.prompt, 54)}`;
     const label = [`Plan Card`, `Status: planned`, `Command: ${oneLine(command.prompt, 110)}`].join("\n");
     const size = taskCardSize(label);
@@ -245,9 +287,9 @@ export class ExcalidrawApiServer {
   }
 
   private async handleListTasks(url: URL, res: ServerResponse): Promise<void> {
-    const project = this.getExcalidrawProject();
+    const project = await this.projectFromQuery(url);
     const tasks = this.deps.tasks.listByProject(project.id, limitParam(url)).map((task) => this.taskView(task));
-    const cards = this.hydrateCards(this.deps.cards.listRecent(limitParam(url)));
+    const cards = this.hydrateCards(this.deps.cards.listByProject(project.id, limitParam(url)));
     this.sendJson(res, 200, { tasks, cards });
   }
 
@@ -258,6 +300,38 @@ export class ExcalidrawApiServer {
       return;
     }
     this.sendJson(res, 200, this.taskView(task));
+  }
+
+  private async handleGetTaskHistory(taskId: number, res: ServerResponse): Promise<void> {
+    const task = this.deps.tasks.getById(taskId);
+    if (!task) {
+      this.sendJson(res, 404, { error: `Task ${taskId} not found.` });
+      return;
+    }
+    this.sendJson(res, 200, this.taskHistoryView(task));
+  }
+
+  private async handleTaskMessage(taskId: number, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const task = this.deps.tasks.getById(taskId);
+    if (!task) {
+      this.sendJson(res, 404, { error: `Task ${taskId} not found.` });
+      return;
+    }
+    const body = await readJson(req);
+    const source = stringField(body, "source", "excalidraw");
+    if (source !== "excalidraw") {
+      this.sendJson(res, 400, { error: "Only source=excalidraw is supported by this API." });
+      return;
+    }
+    const content = stringField(body, "content").trim();
+    await this.deps.implementService.enqueueFollowUp({
+      task,
+      content,
+      requestedBy: "excalidraw",
+      sourceUi: "excalidraw",
+    });
+    const refreshed = this.deps.tasks.getById(taskId) ?? task;
+    this.sendJson(res, 202, this.taskHistoryView(refreshed));
   }
 
   private async handleUpdateCard(cardId: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -275,7 +349,7 @@ export class ExcalidrawApiServer {
     this.sendJson(res, 200, { card: this.hydrateCard(card) });
   }
 
-  private getExcalidrawProject(): Project {
+  private getDefaultExcalidrawProject(): Project {
     return this.deps.projects.getOrCreate({
       guildId: this.deps.config.excalidrawProjectGuildId,
       channelId: this.deps.config.excalidrawProjectChannelId,
@@ -283,15 +357,46 @@ export class ExcalidrawApiServer {
     });
   }
 
-  private async getSyncedExcalidrawProject(): Promise<Project> {
-    return this.deps.implementService.syncProjectOrigin(this.getExcalidrawProject());
+  private async getSyncedExcalidrawProject(project: Project): Promise<Project> {
+    return this.deps.implementService.syncProjectOrigin(project);
+  }
+
+  private async projectFromQuery(url: URL): Promise<Project> {
+    const projectId = numericQueryParam(url, "projectId");
+    if (projectId !== null) {
+      const project = this.deps.projects.getById(projectId);
+      if (!project || project.guildId !== this.deps.config.excalidrawProjectGuildId) {
+        throw new Error(`Excalidraw project ${projectId} was not found.`);
+      }
+      return project;
+    }
+    return this.getDefaultExcalidrawProject();
+  }
+
+  private async projectFromBody(body: JsonRecord): Promise<Project> {
+    const rawProjectId = body.projectId;
+    if (rawProjectId !== undefined && rawProjectId !== null && rawProjectId !== "") {
+      const projectId = typeof rawProjectId === "number" ? rawProjectId : Number(rawProjectId);
+      if (!Number.isInteger(projectId) || projectId <= 0) {
+        throw new Error("projectId must be a positive integer.");
+      }
+      const project = this.deps.projects.getById(projectId);
+      if (!project || project.guildId !== this.deps.config.excalidrawProjectGuildId) {
+        throw new Error(`Excalidraw project ${projectId} was not found.`);
+      }
+      return project;
+    }
+    return this.getDefaultExcalidrawProject();
   }
 
   private projectView(project: Project): ExcalidrawProjectView {
     const blockers = projectBlockers(project, this.deps.config);
+    const taskCount = this.deps.tasks.countByProject(project.id);
     return {
       projectId: project.id,
       projectName: project.projectName,
+      projectSlug: project.projectSlug,
+      channelId: project.channelId,
       repoPath: project.repoPath,
       worktreesPath: project.worktreesPath,
       remoteStatus: project.remoteStatus,
@@ -302,6 +407,7 @@ export class ExcalidrawApiServer {
       githubRemote: this.deps.config.githubRemote,
       prReady: blockers.length === 0,
       blockers,
+      taskCount,
     };
   }
 
@@ -321,6 +427,47 @@ export class ExcalidrawApiServer {
       card,
       createdAt: task.createdAt,
       updatedAt: task.updatedAt,
+    };
+  }
+
+  private taskHistoryView(task: Task): JsonRecord {
+    const project = this.deps.projects.getById(task.projectId);
+    const progress = this.taskProgress(task);
+    const view = this.taskView(task);
+    return {
+      ...view,
+      project: project ? this.projectView(project) : null,
+      projectId: task.projectId,
+      projectName: project?.projectName ?? null,
+      projectTaskNumber: task.projectTaskNumber,
+      guildId: task.guildId,
+      channelId: task.channelId,
+      mode: task.mode,
+      sandbox: task.sandbox,
+      model: task.model,
+      effort: task.effort,
+      mergeStatus: task.mergeStatus,
+      baseBranch: task.baseBranch,
+      taskBranch: task.taskBranch,
+      worktreePath: task.worktreePath,
+      codexThreadId: task.codexThreadId,
+      discordThreadId: task.discordThreadId,
+      discordThreadUrl: task.discordThreadUrl,
+      pullRequestUrl: task.pullRequestUrl ?? task.prUrl,
+      finalSummary: task.finalSummary,
+      completionSummary: task.completionSummary,
+      error: task.error,
+      latestPhase: progress.phase,
+      latestActivity: progress.activity,
+      currentCommand: progress.currentCommand,
+      changedFiles: progress.changedFiles,
+      messageCounts: progress.messageCounts,
+      messages: this.deps.tasks.listMessagesByTask(task.id),
+      codexEvents: this.deps.tasks.listCodexActivity(task.id, 200),
+      pullRequestFeedback: {
+        summary: this.deps.feedback?.getTaskFeedbackSummary(task.id) ?? null,
+        events: this.deps.feedback?.listEventsByTask(task.id, 100) ?? [],
+      },
     };
   }
 
@@ -436,6 +583,16 @@ function limitParam(url: URL): number {
   return Math.max(1, Math.min(100, Math.floor(raw)));
 }
 
+function numericQueryParam(url: URL, key: string): number | null {
+  const raw = url.searchParams.get(key);
+  if (!raw) return null;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${key} must be a positive integer.`);
+  }
+  return parsed;
+}
+
 function nextCardX(seed: number): number {
   return 80 + (seed % 4) * 390;
 }
@@ -455,6 +612,7 @@ function contentType(fullPath: string): string {
 function cardViewForTask(card: ExcalidrawCard, task: Task, progress: ExcalidrawTaskProgress): ExcalidrawCard {
   const label = taskCardLabelWithProgress(task, progress);
   const size = taskCardSize(label, card);
+  const links = taskLinks(task);
   return {
     ...card,
     title: taskTitle(task),
@@ -462,9 +620,47 @@ function cardViewForTask(card: ExcalidrawCard, task: Task, progress: ExcalidrawT
     status: mapTaskStatus(task.status),
     branch: task.taskBranch,
     width: size.width,
-    height: size.height,
+    height: links.length ? size.height + 34 : size.height,
+    links,
     progress,
   };
+}
+
+function taskLinks(task: Task): ExcalidrawCardLink[] {
+  const links: ExcalidrawCardLink[] = [];
+  addSafeLink(links, "PR", task.pullRequestUrl ?? task.prUrl);
+  addSafeLink(links, "Discord", task.discordThreadUrl);
+  links.push({ label: "Task", url: `/?projectId=${encodeURIComponent(String(task.projectId))}&taskId=${encodeURIComponent(String(task.id))}` });
+  return dedupeLinks(links).slice(0, 4);
+}
+
+function addSafeLink(links: ExcalidrawCardLink[], label: string, value: string | null | undefined): void {
+  const url = browserSafeUrl(value);
+  if (!url) return;
+  links.push({ label, url });
+}
+
+function browserSafeUrl(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return parsed.toString();
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function dedupeLinks(links: ExcalidrawCardLink[]): ExcalidrawCardLink[] {
+  const seen = new Set<string>();
+  return links.filter((link) => {
+    if (seen.has(link.url)) return false;
+    seen.add(link.url);
+    return true;
+  });
 }
 
 function allowedCorsOrigin(requestOrigin: string | undefined, configured: string): string | null {
@@ -499,5 +695,5 @@ function looksLikeGitRemote(value: string): boolean {
 function isClientError(error: unknown): boolean {
   if (error instanceof SyntaxError) return true;
   const message = error instanceof Error ? error.message : String(error);
-  return /must be|required|too large|non-empty|mode must|source=|Use \/implement|Git remote URL/.test(message);
+  return /must be|required|too large|non-empty|mode must|source=|Use \/implement|Git remote URL|project|closed|remote before/.test(message);
 }
