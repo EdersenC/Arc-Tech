@@ -23,6 +23,7 @@ type ArcElement = {
   y: number;
   width: number;
   height: number;
+  link?: string | null;
   customData?: {
     arc?: {
       cardId?: string;
@@ -34,14 +35,23 @@ type ArcElement = {
       phase?: string;
       activity?: string;
       lastActivityAt?: string;
+      link?: string | null;
+      linkLabel?: string | null;
     };
   };
+};
+
+type ArcLink = {
+  label: string;
+  url: string;
 };
 
 export default function App() {
   const excalidrawApiRef = useRef<ExcalidrawApi | null>(null);
   const cardsRef = useRef<ArcCard[]>([]);
   const persistTimerRef = useRef<number | null>(null);
+  const pendingPositionUpdatesRef = useRef<Map<string, ArcCard>>(new Map());
+  const sceneApplyUntilRef = useRef(0);
   const [cards, setCards] = useState<ArcCard[]>([]);
   const [command, setCommand] = useState("/implement ");
   const [mode, setMode] = useState<ArcCardMode>("direct_agent");
@@ -53,13 +63,15 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
 
   const applyCardsToScene = useCallback((nextCards: ArcCard[]) => {
-    cardsRef.current = nextCards;
-    setCards(nextCards);
+    const mergedCards = mergeCardsWithLocalLayout(nextCards, cardsRef.current);
+    cardsRef.current = mergedCards;
+    setCards(mergedCards);
     const api = excalidrawApiRef.current;
     if (!api) return;
     const current = api.getSceneElements();
     const nonArcElements = current.filter((element) => !isArcElement(element));
-    api.updateScene({ elements: [...nonArcElements, ...cardsToElements(nextCards)] });
+    sceneApplyUntilRef.current = Date.now() + 250;
+    api.updateScene({ elements: [...nonArcElements, ...cardsToElements(mergedCards)] });
   }, []);
 
   const refresh = useCallback(async () => {
@@ -139,19 +151,33 @@ export default function App() {
   }
 
   function handleSceneChange(elements: readonly ArcElement[]) {
+    if (Date.now() < sceneApplyUntilRef.current) {
+      return;
+    }
+    const updates = changedCardPositions(elements, cardsRef.current);
+    if (updates.length === 0) {
+      return;
+    }
+
+    cardsRef.current = cardsRef.current.map((card) => updates.find((update) => update.id === card.id) ?? card);
+    setCards(cardsRef.current);
+    for (const update of updates) {
+      pendingPositionUpdatesRef.current.set(update.id, update);
+    }
+
     if (persistTimerRef.current) {
       window.clearTimeout(persistTimerRef.current);
     }
     persistTimerRef.current = window.setTimeout(() => {
-      const updates = changedCardPositions(elements, cardsRef.current);
-      for (const update of updates) {
+      const pending = Array.from(pendingPositionUpdatesRef.current.values());
+      pendingPositionUpdatesRef.current.clear();
+      for (const update of pending) {
         void updateCardPosition(update).catch((positionError) => {
           setError(positionError instanceof Error ? positionError.message : String(positionError));
         });
       }
-      if (updates.length > 0) {
-        cardsRef.current = cardsRef.current.map((card) => updates.find((update) => update.id === card.id) ?? card);
-        setCards(cardsRef.current);
+      if (pending.length > 0) {
+        setStatus(`Moved ${pending.length} card${pending.length === 1 ? "" : "s"}`);
       }
     }, 600);
   }
@@ -234,6 +260,7 @@ export default function App() {
 function cardsToElements(cards: ArcCard[]) {
   return convertToExcalidrawElements(
     cards.flatMap((card) => {
+      const primaryLink = cardPrimaryLink(card);
       const metadata = {
         arc: {
           type: card.mode === "plan_card_only" ? "plan" : "task",
@@ -245,6 +272,8 @@ function cardsToElements(cards: ArcCard[]) {
           phase: card.progress?.phase,
           activity: card.progress?.activity,
           lastActivityAt: card.progress?.lastActivityAt,
+          link: primaryLink?.url ?? null,
+          linkLabel: primaryLink?.label ?? null,
         },
       };
       return [
@@ -261,6 +290,7 @@ function cardsToElements(cards: ArcCard[]) {
           roughness: 1,
           opacity: 100,
           roundness: { type: 3 },
+          link: primaryLink?.url ?? null,
           groupIds: [card.id],
           customData: metadata,
         },
@@ -278,6 +308,7 @@ function cardsToElements(cards: ArcCard[]) {
           verticalAlign: "top",
           strokeColor: "#1f2937",
           backgroundColor: "transparent",
+          link: primaryLink?.url ?? null,
           groupIds: [card.id],
           customData: metadata,
         },
@@ -289,26 +320,18 @@ function cardsToElements(cards: ArcCard[]) {
 
 function changedCardPositions(elements: readonly ArcElement[], cards: ArcCard[]): ArcCard[] {
   const byId = new Map(cards.map((card) => [card.id, card]));
-  return elements
-    .filter((element) => isArcElement(element) && element.id.startsWith("arc-card-") && !element.id.endsWith("-text"))
-    .map((element) => {
-      const cardId = element.customData?.arc?.cardId;
-      const card = cardId ? byId.get(cardId) : null;
+  return Array.from(cardLayoutFromElements(elements).entries())
+    .map(([cardId, layout]) => {
+      const card = byId.get(cardId);
       if (!card) return null;
-      const next = {
-        ...card,
-        x: Math.round(element.x),
-        y: Math.round(element.y),
-        width: Math.round(element.width),
-        height: Math.round(element.height),
-      };
+      const next = { ...card, ...layout };
       return samePosition(card, next) ? null : next;
     })
     .filter((card): card is ArcCard => Boolean(card));
 }
 
 function isArcElement(element: ArcElement): boolean {
-  return element.customData?.arc?.source === "excalidraw";
+  return element.customData?.arc?.source === "excalidraw" || Boolean(cardIdFromElement(element));
 }
 
 function samePosition(left: ArcCard, right: ArcCard): boolean {
@@ -321,6 +344,111 @@ function rectElementId(cardId: string): string {
 
 function textElementId(cardId: string): string {
   return `arc-card-${cardId}-text`;
+}
+
+function cardIdFromElement(element: ArcElement): string | null {
+  const metadataId = element.customData?.arc?.cardId;
+  if (metadataId) return metadataId;
+  const match = /^arc-card-(.+?)(?:-text)?$/.exec(element.id);
+  return match?.[1] ?? null;
+}
+
+function cardLayoutFromElements(elements: readonly ArcElement[]): Map<string, Pick<ArcCard, "x" | "y" | "width" | "height">> {
+  const layouts = new Map<string, Pick<ArcCard, "x" | "y" | "width" | "height">>();
+  for (const element of elements) {
+    const cardId = cardIdFromElement(element);
+    if (!cardId) continue;
+    if (element.id === rectElementId(cardId)) {
+      layouts.set(cardId, roundedLayout(element));
+      continue;
+    }
+    if (!layouts.has(cardId) && element.id === textElementId(cardId)) {
+      layouts.set(cardId, {
+        x: Math.round(element.x - 18),
+        y: Math.round(element.y - 18),
+        width: Math.round(element.width + 36),
+        height: Math.round(element.height + 36),
+      });
+    }
+  }
+  return layouts;
+}
+
+function roundedLayout(element: ArcElement): Pick<ArcCard, "x" | "y" | "width" | "height"> {
+  return {
+    x: Math.round(element.x),
+    y: Math.round(element.y),
+    width: Math.round(element.width),
+    height: Math.round(element.height),
+  };
+}
+
+function mergeCardsWithLocalLayout(serverCards: ArcCard[], localCards: ArcCard[]): ArcCard[] {
+  const localById = new Map(localCards.map((card) => [card.id, card]));
+  return serverCards.map((serverCard) => {
+    const localCard = localById.get(serverCard.id);
+    if (!localCard) return serverCard;
+    return {
+      ...serverCard,
+      x: localCard.x,
+      y: localCard.y,
+      width: Math.max(serverCard.width, localCard.width),
+      height: Math.max(serverCard.height, localCard.height),
+    };
+  });
+}
+
+function cardPrimaryLink(card: ArcCard): ArcLink | null {
+  const links = cardLinks(card);
+  return links[0] ?? null;
+}
+
+function cardLinks(card: ArcCard): ArcLink[] {
+  const links: ArcLink[] = [];
+  addLink(links, "PR", card.progress?.pullRequestUrl);
+  addLinksFromText(links, card.label);
+  addLinksFromText(links, card.progress?.summary ?? null);
+  addLinksFromText(links, card.progress?.error ?? null);
+  return dedupeLinks(links);
+}
+
+function addLink(links: ArcLink[], label: string, value: string | null | undefined): void {
+  const url = browserSafeUrl(value);
+  if (!url) return;
+  links.push({ label, url });
+}
+
+function addLinksFromText(links: ArcLink[], value: string | null): void {
+  if (!value) return;
+  for (const [, label, url] of value.matchAll(/\[([^\]]+)\]\(([^)]+)\)/g)) {
+    addLink(links, label, url);
+  }
+  for (const [url] of value.matchAll(/https?:\/\/[^\s)>\]]+/g)) {
+    addLink(links, "Link", url);
+  }
+}
+
+function browserSafeUrl(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return parsed.toString();
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function dedupeLinks(links: ArcLink[]): ArcLink[] {
+  const seen = new Set<string>();
+  return links.filter((link) => {
+    if (seen.has(link.url)) return false;
+    seen.add(link.url);
+    return true;
+  });
 }
 
 function nextCardX(count: number): number {
