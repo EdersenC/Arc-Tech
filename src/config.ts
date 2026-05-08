@@ -11,6 +11,9 @@ export const config = {
   workspacesDir: path.resolve(process.env.WORKSPACES_DIR || "./workspaces"),
   codexBin: process.env.CODEX_BIN || "codex",
   enableMessageContentIntent: booleanEnv("ENABLE_MESSAGE_CONTENT_INTENT", false),
+  githubPrEnabled: booleanEnv("GITHUB_PR_ENABLED", false),
+  githubBaseBranch: process.env.GITHUB_BASE_BRANCH || "main",
+  githubRemote: process.env.GITHUB_REMOTE || "origin",
 };
 
 export type AppConfig = typeof config;

@@ -38,14 +38,87 @@ export class AppDatabase {
       ["live_status_message_id", "TEXT"],
       ["control_panel_message_id", "TEXT"],
       ["pull_request_url", "TEXT"],
+      ["pr_url", "TEXT"],
       ["final_summary", "TEXT"],
+      ["completion_summary", "TEXT"],
+      ["discord_thread_url", "TEXT"],
+      ["parent_orchestration_id", "INTEGER"],
+      ["orchestration_agent_id", "INTEGER"],
+      ["agent_role", "TEXT"],
       ["error", "TEXT"],
       ["requested_by", "TEXT"],
       ["mode", "TEXT NOT NULL DEFAULT 'implement'"],
+      ["sandbox", "TEXT NOT NULL DEFAULT 'workspace-write'"],
+      ["model", "TEXT NOT NULL DEFAULT 'gpt-5.3-codex'"],
+      ["effort", "TEXT NOT NULL DEFAULT 'medium'"],
+      ["base_branch", "TEXT"],
+      ["task_branch", "TEXT"],
+      ["worktree_path", "TEXT"],
     ]);
     this.backfillProjectTaskNumbers();
     this.db.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_project_task_number ON tasks(project_id, project_task_number);
+      CREATE INDEX IF NOT EXISTS idx_tasks_parent_orchestration ON tasks(parent_orchestration_id);
+      CREATE INDEX IF NOT EXISTS idx_tasks_orchestration_agent ON tasks(orchestration_agent_id);
+      CREATE TABLE IF NOT EXISTS orchestrations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        discord_thread_id TEXT,
+        discord_thread_url TEXT,
+        control_panel_message_id TEXT,
+        author_user_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        goal TEXT NOT NULL,
+        planner_task_id INTEGER,
+        planner_model TEXT,
+        planner_effort TEXT,
+        min_agents INTEGER NOT NULL DEFAULT 2,
+        max_agents INTEGER NOT NULL DEFAULT 10,
+        auto_start_children INTEGER NOT NULL DEFAULT 1,
+        final_plan_json TEXT,
+        final_summary TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        launched_at TEXT,
+        completed_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_orchestrations_project ON orchestrations(project_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_orchestrations_thread ON orchestrations(discord_thread_id);
+      CREATE TABLE IF NOT EXISTS orchestration_agents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        orchestration_id INTEGER NOT NULL REFERENCES orchestrations(id) ON DELETE CASCADE,
+        child_task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+        agent_index INTEGER NOT NULL,
+        agent_name TEXT NOT NULL,
+        role TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        model TEXT,
+        effort TEXT,
+        status TEXT NOT NULL DEFAULT 'planned',
+        branch_name TEXT,
+        worktree_path TEXT,
+        discord_thread_id TEXT,
+        discord_thread_url TEXT,
+        pr_url TEXT,
+        completion_summary TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        started_at TEXT,
+        completed_at TEXT,
+        UNIQUE (orchestration_id, agent_index)
+      );
+      CREATE INDEX IF NOT EXISTS idx_orchestration_agents_orchestration ON orchestration_agents(orchestration_id, agent_index);
+      CREATE INDEX IF NOT EXISTS idx_orchestration_agents_child_task ON orchestration_agents(child_task_id);
+      CREATE TABLE IF NOT EXISTS orchestration_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        orchestration_id INTEGER NOT NULL REFERENCES orchestrations(id) ON DELETE CASCADE,
+        discord_message_id TEXT,
+        author_user_id TEXT,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        metadata_json TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_orchestration_messages_orchestration ON orchestration_messages(orchestration_id, created_at);
       CREATE TABLE IF NOT EXISTS codex_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,

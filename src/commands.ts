@@ -5,5 +5,9 @@ export const commands = [
     .setName("implement")
     .setDescription("Create a checkpoint task thread.")
     .addStringOption((option) => option.setName("msg").setDescription("Task request").setRequired(true)),
+  new SlashCommandBuilder()
+    .setName("orchestrate")
+    .setDescription("Plan and launch a visible fleet of Codex implementation agents.")
+    .addStringOption((option) => option.setName("msg").setDescription("Orchestration goal").setRequired(true)),
   new SlashCommandBuilder().setName("status").setDescription("Check whether the bot is online."),
 ].map((command) => command.toJSON());
