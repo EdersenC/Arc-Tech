@@ -83,6 +83,7 @@ export interface AgentFleetPlanAgent {
   prompt: string;
   model?: string;
   effort?: Effort;
+  prTitle?: string;
   dependsOn?: string[];
   expectedFiles?: string[];
   acceptanceCriteria: string[];

@@ -243,6 +243,8 @@ Bounds are clamped to a hard minimum of 2 and hard maximum of 10. Children auto-
 
 PR URLs are optional. With `GITHUB_PR_ENABLED=false`, tasks still commit locally and report branch/worktree paths. With GitHub PRs enabled and `gh` configured, the app can push task branches and create or update PRs. Missing GitHub integration does not fail an orchestration.
 
+Implementation agents can propose their own PR names by ending with `PR title: <short descriptive title>`. Orchestration planners can also include optional child-level `prTitle` values in the AgentFleetPlan. The TypeScript runner sanitizes these titles and still owns `gh pr create`/`gh pr edit`; Codex never receives GitHub control directly. If no title is proposed, the runner falls back to the task number plus a shortened command.
+
 ## PR Feedback Worker
 
 When `GITHUB_PR_FEEDBACK_ENABLED=true`, the runner polls tracked open PRs created by agent tasks. The worker uses `gh api` to read PR issue comments, review summaries, and inline review comments. New feedback is deduped in SQLite, queued as a normal task follow-up, and the owning agent task is automatically enqueued.
@@ -343,7 +345,7 @@ After Codex finishes, the orchestrator runs the Git lifecycle path:
 - removes `.codex-tmp/`
 - commits any remaining uncommitted task changes
 - pushes the task branch when GitHub PR integration is enabled
-- creates or reuses a GitHub pull request with `gh` when available
+- creates or reuses a GitHub pull request with `gh` when available, using the agent-proposed PR title when provided
 - posts the PR link in the task thread when one exists
 
 ## Live Progress

@@ -154,6 +154,9 @@ ${agent.dependsOn?.length ? agent.dependsOn.join("\n") : "None"}
 Expected files:
 ${agent.expectedFiles?.length ? agent.expectedFiles.join("\n") : "Not specified"}
 
+Suggested PR title:
+${agent.prTitle ?? `${agent.name}: ${agent.objective}`.slice(0, 100)}
+
 Acceptance criteria:
 ${agent.acceptanceCriteria.map((criterion) => `- ${criterion}`).join("\n")}
 
@@ -179,7 +182,8 @@ Rules:
   - files changed
   - tests run
   - known risks
-  - branch`;
+  - branch
+  - PR title: <short descriptive title>`;
   }
 
   generateBranchName(orchestrationId: number, agentIndex: number, agentName: string): string {

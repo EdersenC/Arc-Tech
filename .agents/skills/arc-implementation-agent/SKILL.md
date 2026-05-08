@@ -12,7 +12,7 @@ Rules:
 - Do not delete sibling worktrees.
 - Do not change branches.
 - Run relevant tests when available.
-- Produce a concise completion summary with what changed, files changed, tests run, known risks, and branch.
+- Produce a concise completion summary with what changed, files changed, tests run, known risks, branch, and `PR title: <short descriptive title>`.
 - Use `arcctl orchestrate report-agent-done` if available, but do not require it.
 
 See `references/child-agent-report.md`.

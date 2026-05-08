@@ -222,7 +222,8 @@ Continue modifying the same isolated task worktree. Stay on the current task bra
 
 Primary completion goal:
 - Finish the requested work in this isolated task worktree.
-- End with a concise summary of what changed, files changed, tests run, and known risks.
+- End with a concise summary of what changed, files changed, tests run, known risks, and a proposed pull request title.
+- Include a line exactly like: PR title: <short descriptive title>
 
 Git rules:
 - Do not run git add, git commit, git push, or gh pr create.
