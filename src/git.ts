@@ -4,6 +4,16 @@ import { execa } from "execa";
 import { taskLabel } from "./taskLabels.js";
 import type { Project, Task } from "./types.js";
 
+interface GitHubRepoRef {
+  owner: string;
+  repo: string;
+}
+
+interface GitHubPullRequestResponse {
+  number: number;
+  html_url?: string | null;
+}
+
 export class GitManager {
   async ensureProjectRepo(project: Project): Promise<string> {
     await fs.mkdir(project.repoPath, { recursive: true });
@@ -148,19 +158,18 @@ export class GitManager {
     const remote = options.remote ?? "origin";
     await this.git(["push", "-u", remote, `HEAD:${taskBranch}`], worktreePath);
 
-    const existing = await this.gh(["pr", "view", taskBranch, "--json", "url", "--jq", ".url"], worktreePath, {
-      allowFailure: true,
-    });
-    if (existing.exitCode === 0 && String(existing.stdout ?? "").trim()) {
-      await this.gh(["pr", "edit", taskBranch, "--title", title, "--body", body], worktreePath);
-      return String(existing.stdout).trim();
+    const repo = await this.requireGitHubRepoForRemote(worktreePath, remote);
+    const existing = await this.findOpenPullRequest(repo, taskBranch, worktreePath);
+    if (existing?.html_url) {
+      await this.updatePullRequest(repo, existing.number, title, body, worktreePath);
+      return existing.html_url;
     }
 
-    const created = await this.gh(
-      ["pr", "create", "--base", baseBranch, "--head", taskBranch, "--title", title, "--body", body],
-      worktreePath,
-    );
-    return String(created.stdout ?? "").trim();
+    const created = await this.createPullRequest(repo, baseBranch, taskBranch, title, body, worktreePath);
+    if (!created.html_url) {
+      throw new Error(`GitHub API created PR #${created.number}, but did not return html_url.`);
+    }
+    return created.html_url;
   }
 
   async getDiffStat(task: Task): Promise<string> {
@@ -259,6 +268,71 @@ export class GitManager {
     return result;
   }
 
+  private async requireGitHubRepoForRemote(cwd: string, remote: string): Promise<GitHubRepoRef> {
+    const remoteUrl = (await this.gitOutput(["remote", "get-url", remote], cwd)).trim();
+    const repo = parseGitHubRemoteUrl(remoteUrl);
+    if (!repo) {
+      throw new Error(`Remote ${remote} is not a GitHub remote URL: ${remoteUrl}`);
+    }
+    return repo;
+  }
+
+  private async findOpenPullRequest(
+    repo: GitHubRepoRef,
+    taskBranch: string,
+    cwd: string,
+  ): Promise<GitHubPullRequestResponse | null> {
+    const query = new URLSearchParams({ state: "open", head: `${repo.owner}:${taskBranch}` });
+    const pulls = await this.ghApiJson<GitHubPullRequestResponse[]>(`repos/${repo.owner}/${repo.repo}/pulls?${query.toString()}`, cwd);
+    return pulls[0] ?? null;
+  }
+
+  private async updatePullRequest(repo: GitHubRepoRef, number: number, title: string, body: string, cwd: string): Promise<void> {
+    await this.ghApiJson<GitHubPullRequestResponse>(`repos/${repo.owner}/${repo.repo}/pulls/${number}`, cwd, {
+      method: "PATCH",
+      fields: { title, body },
+    });
+  }
+
+  private async createPullRequest(
+    repo: GitHubRepoRef,
+    baseBranch: string,
+    taskBranch: string,
+    title: string,
+    body: string,
+    cwd: string,
+  ): Promise<GitHubPullRequestResponse> {
+    return this.ghApiJson<GitHubPullRequestResponse>(`repos/${repo.owner}/${repo.repo}/pulls`, cwd, {
+      method: "POST",
+      fields: {
+        title,
+        body,
+        base: baseBranch,
+        head: `${repo.owner}:${taskBranch}`,
+      },
+    });
+  }
+
+  private async ghApiJson<T>(
+    endpoint: string,
+    cwd: string,
+    options: { method?: "GET" | "POST" | "PATCH"; fields?: Record<string, string> } = {},
+  ): Promise<T> {
+    const args = ["api"];
+    if (options.method && options.method !== "GET") {
+      args.push("-X", options.method);
+    }
+    args.push(endpoint);
+    for (const [key, value] of Object.entries(options.fields ?? {})) {
+      args.push("-f", `${key}=${value}`);
+    }
+    const result = await execa("gh", args, { cwd, reject: false, all: true });
+    if (result.exitCode !== 0) {
+      throw new Error(`gh api ${endpoint} failed: ${String(result.all ?? result.stderr)}`);
+    }
+    return JSON.parse(String(result.stdout || "null")) as T;
+  }
+
   private async gitOutput(args: string[], cwd: string, options: { allowFailure?: boolean } = {}): Promise<string> {
     const result = await this.git(args, cwd, options);
     return String(result.stdout ?? "");
@@ -290,4 +364,21 @@ function requireBranch(task: Task): string {
     throw new Error(`Task ${taskLabel(task)} does not have a task branch.`);
   }
   return task.taskBranch;
+}
+
+function parseGitHubRemoteUrl(value: string): GitHubRepoRef | null {
+  const trimmed = value.trim().replace(/\.git$/, "");
+  const https = /^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)$/i.exec(trimmed);
+  if (https) {
+    return { owner: https[1], repo: https[2] };
+  }
+  const ssh = /^git@github\.com:([^/\s]+)\/([^/\s]+)$/i.exec(trimmed);
+  if (ssh) {
+    return { owner: ssh[1], repo: ssh[2] };
+  }
+  const sshUrl = /^ssh:\/\/git@github\.com\/([^/\s]+)\/([^/\s]+)$/i.exec(trimmed);
+  if (sshUrl) {
+    return { owner: sshUrl[1], repo: sshUrl[2] };
+  }
+  return null;
 }
