@@ -22,6 +22,14 @@ input {
   font: inherit;
 }
 
+.top-panel {
+  display: grid;
+  border-bottom: 1px solid #d6cec1;
+  background: #fffaf2;
+  box-shadow: 0 1px 12px rgba(31, 41, 55, 0.08);
+  z-index: 2;
+}
+
 .arc-shell {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -34,10 +42,7 @@ input {
   gap: 10px;
   align-items: center;
   padding: 12px 14px;
-  border-bottom: 1px solid #d6cec1;
-  background: #fffaf2;
-  box-shadow: 0 1px 12px rgba(31, 41, 55, 0.08);
-  z-index: 2;
+  border-bottom: 1px solid #e4dccf;
 }
 
 .brand-block {
@@ -69,7 +74,8 @@ input {
 
 .mode-group button,
 .submit-button,
-.refresh-button {
+.refresh-button,
+.connect-button {
   min-height: 36px;
   border: 0;
   border-radius: 6px;
@@ -101,7 +107,20 @@ input {
   outline: none;
 }
 
-.command-panel input:focus {
+.repo-panel input {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  border: 1px solid #c8c0b5;
+  border-radius: 7px;
+  padding: 0 12px;
+  color: #111827;
+  background: #ffffff;
+  outline: none;
+}
+
+.command-panel input:focus,
+.repo-panel input:focus {
   border-color: #2563eb;
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
 }
@@ -112,7 +131,8 @@ input {
 }
 
 .submit-button:disabled,
-.refresh-button:disabled {
+.refresh-button:disabled,
+.connect-button:disabled {
   cursor: default;
   opacity: 0.65;
 }
@@ -120,6 +140,47 @@ input {
 .refresh-button {
   color: #1f2937;
   background: #e5e7eb;
+}
+
+.connect-button {
+  color: #ffffff;
+  background: #047857;
+  white-space: nowrap;
+}
+
+.repo-panel {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(320px, 520px) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 14px;
+}
+
+.repo-state {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.repo-state strong {
+  font-size: 13px;
+  line-height: 1.15;
+}
+
+.repo-state span {
+  overflow: hidden;
+  color: #475569;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo-state.ready strong {
+  color: #047857;
+}
+
+.repo-state.blocked strong {
+  color: #b45309;
 }
 
 .status-strip {
@@ -149,13 +210,23 @@ input {
 
   .brand-block,
   .command-panel input,
-  .status-strip {
+  .status-strip,
+  .repo-state,
+  .repo-panel input {
     grid-column: 1 / -1;
+  }
+
+  .repo-panel {
+    grid-template-columns: 1fr auto;
   }
 }
 
 @media (max-width: 560px) {
   .command-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .repo-panel {
     grid-template-columns: 1fr;
   }
 

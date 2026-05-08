@@ -28,6 +28,21 @@ interface ApiDeps {
 
 type JsonRecord = Record<string, unknown>;
 
+interface ExcalidrawProjectView {
+  projectId: number;
+  projectName: string;
+  repoPath: string;
+  worktreesPath: string;
+  remoteStatus: Project["remoteStatus"];
+  remoteUrl: string | null;
+  githubPrEnabled: boolean;
+  githubPrFeedbackEnabled: boolean;
+  githubBaseBranch: string;
+  githubRemote: string;
+  prReady: boolean;
+  blockers: string[];
+}
+
 const STATIC_ROOT = path.resolve(process.cwd(), "dist/web");
 
 export class ExcalidrawApiServer {
@@ -73,6 +88,14 @@ export class ExcalidrawApiServer {
     }
     if (url.pathname === "/api/implement" && req.method === "POST") {
       await this.handleImplement(req, res);
+      return;
+    }
+    if (url.pathname === "/api/excalidraw/project" && req.method === "GET") {
+      await this.handleGetProject(res);
+      return;
+    }
+    if (url.pathname === "/api/excalidraw/project/remote" && req.method === "POST") {
+      await this.handleSetProjectRemote(req, res);
       return;
     }
     if (url.pathname === "/api/tasks" && req.method === "GET") {
@@ -127,14 +150,24 @@ export class ExcalidrawApiServer {
       return;
     }
 
-    const project = this.getExcalidrawProject();
+    const project = await this.getSyncedExcalidrawProject();
+    const projectView = this.projectView(project);
+    if (!projectView.prReady) {
+      this.sendJson(res, 409, {
+        code: projectView.githubPrEnabled ? "REMOTE_REQUIRED" : "PR_DISABLED",
+        error: projectView.blockers.join(" "),
+        project: projectView,
+      });
+      return;
+    }
+
     const result = await this.deps.implementService.run({
       project,
       prompt: command.prompt,
       requestedBy: "excalidraw",
       sourceUi: "excalidraw",
       startImmediately: true,
-      allowLocalOnlyWithoutRemote: true,
+      allowLocalOnlyWithoutRemote: false,
     });
     const card = this.deps.cards.createForTask(result.task, {
       command: command.original,
@@ -148,6 +181,28 @@ export class ExcalidrawApiServer {
       title: taskTitle(result.task),
       branch: result.task.taskBranch,
       card,
+    });
+  }
+
+  private async handleGetProject(res: ServerResponse): Promise<void> {
+    const project = await this.getSyncedExcalidrawProject();
+    this.sendJson(res, 200, { project: this.projectView(project) });
+  }
+
+  private async handleSetProjectRemote(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const body = await readJson(req);
+    const remoteUrl = stringField(body, "remoteUrl").trim();
+    if (!looksLikeGitRemote(remoteUrl)) {
+      this.sendJson(res, 400, { error: "remoteUrl must be a Git remote URL, like https://github.com/owner/repo.git." });
+      return;
+    }
+
+    const project = this.getExcalidrawProject();
+    const result = await this.deps.implementService.configureProjectRemote(project, remoteUrl);
+    this.sendJson(res, 200, {
+      project: this.projectView(result.project),
+      baseBranch: result.baseBranch,
+      summary: result.summary,
     });
   }
 
@@ -224,6 +279,28 @@ export class ExcalidrawApiServer {
       channelId: this.deps.config.excalidrawProjectChannelId,
       channelName: this.deps.config.excalidrawProjectName,
     });
+  }
+
+  private async getSyncedExcalidrawProject(): Promise<Project> {
+    return this.deps.implementService.syncProjectOrigin(this.getExcalidrawProject());
+  }
+
+  private projectView(project: Project): ExcalidrawProjectView {
+    const blockers = projectBlockers(project, this.deps.config);
+    return {
+      projectId: project.id,
+      projectName: project.projectName,
+      repoPath: project.repoPath,
+      worktreesPath: project.worktreesPath,
+      remoteStatus: project.remoteStatus,
+      remoteUrl: project.remoteUrl,
+      githubPrEnabled: this.deps.config.githubPrEnabled,
+      githubPrFeedbackEnabled: this.deps.config.githubPrFeedbackEnabled,
+      githubBaseBranch: this.deps.config.githubBaseBranch,
+      githubRemote: this.deps.config.githubRemote,
+      prReady: blockers.length === 0,
+      blockers,
+    };
   }
 
   private taskView(task: Task): ExcalidrawTaskView {
@@ -397,8 +474,23 @@ function allowedCorsOrigin(requestOrigin: string | undefined, configured: string
   return requestOrigin ? null : (allowed[0] ?? null);
 }
 
+function projectBlockers(project: Project, config: AppConfig): string[] {
+  const blockers: string[] = [];
+  if (!config.githubPrEnabled) {
+    blockers.push("Set GITHUB_PR_ENABLED=true and restart Arc-Tech before starting Direct Agent tasks.");
+  }
+  if (project.remoteStatus !== "configured" || !project.remoteUrl) {
+    blockers.push("Connect a GitHub repo remote before starting Direct Agent tasks.");
+  }
+  return blockers;
+}
+
+function looksLikeGitRemote(value: string): boolean {
+  return /^(https?:\/\/|git@|ssh:\/\/).+/.test(value);
+}
+
 function isClientError(error: unknown): boolean {
   if (error instanceof SyntaxError) return true;
   const message = error instanceof Error ? error.message : String(error);
-  return /must be|required|too large|non-empty|mode must|source=|Use \/implement/.test(message);
+  return /must be|required|too large|non-empty|mode must|source=|Use \/implement|Git remote URL/.test(message);
 }

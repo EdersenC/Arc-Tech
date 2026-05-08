@@ -1,6 +1,15 @@
 import { Excalidraw, convertToExcalidrawElements } from "@excalidraw/excalidraw";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { listTasks, submitImplement, updateCardPosition, type ArcCard, type ArcCardMode } from "./api";
+import {
+  connectProjectRemote,
+  getProject,
+  listTasks,
+  submitImplement,
+  updateCardPosition,
+  type ArcCard,
+  type ArcCardMode,
+  type ArcProject,
+} from "./api";
 
 type ExcalidrawApi = {
   updateScene: (scene: { elements: readonly unknown[] }) => void;
@@ -36,7 +45,10 @@ export default function App() {
   const [cards, setCards] = useState<ArcCard[]>([]);
   const [command, setCommand] = useState("/implement ");
   const [mode, setMode] = useState<ArcCardMode>("direct_agent");
+  const [project, setProject] = useState<ArcProject | null>(null);
+  const [remoteUrl, setRemoteUrl] = useState("");
   const [busy, setBusy] = useState(false);
+  const [connecting, setConnecting] = useState(false);
   const [status, setStatus] = useState("Ready");
   const [error, setError] = useState<string | null>(null);
 
@@ -51,10 +63,12 @@ export default function App() {
   }, []);
 
   const refresh = useCallback(async () => {
-    const response = await listTasks();
-    applyCardsToScene(response.cards);
+    const [tasksResponse, projectResponse] = await Promise.all([listTasks(), getProject()]);
+    applyCardsToScene(tasksResponse.cards);
+    setProject(projectResponse.project);
+    setRemoteUrl((current) => current || projectResponse.project.remoteUrl || "");
     setError(null);
-    setStatus(taskStatusLine(response));
+    setStatus(`${taskStatusLine(tasksResponse)} · ${projectStatusLine(projectResponse.project)}`);
   }, [applyCardsToScene]);
 
   useEffect(() => {
@@ -80,6 +94,10 @@ export default function App() {
       setError("Use /implement with a non-empty message.");
       return;
     }
+    if (mode === "direct_agent" && (!project || !project.prReady)) {
+      setError(projectBlockerText(project));
+      return;
+    }
 
     setBusy(true);
     try {
@@ -95,6 +113,28 @@ export default function App() {
       setError(submitError instanceof Error ? submitError.message : String(submitError));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleConnectRemote(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    const trimmed = remoteUrl.trim();
+    if (!trimmed) {
+      setError("Enter a GitHub remote URL before connecting the repo.");
+      return;
+    }
+
+    setConnecting(true);
+    try {
+      const response = await connectProjectRemote(trimmed);
+      setProject(response.project);
+      setRemoteUrl(response.project.remoteUrl ?? trimmed);
+      setStatus(`Connected repo. ${response.summary}`);
+    } catch (connectError) {
+      setError(connectError instanceof Error ? connectError.message : String(connectError));
+    } finally {
+      setConnecting(false);
     }
   }
 
@@ -116,45 +156,65 @@ export default function App() {
     }, 600);
   }
 
+  const directAgentBlocked = mode === "direct_agent" && (!project || !project.prReady);
+
   return (
     <div className="arc-shell">
-      <form className="command-panel" onSubmit={handleSubmit}>
-        <div className="brand-block">
-          <div className="brand-title">Arc-Tech Canvas</div>
-          <div className="brand-subtitle">Visual command surface for implementation tasks</div>
-        </div>
-        <div className="mode-group" role="group" aria-label="Mode">
-          <button
-            type="button"
-            className={mode === "direct_agent" ? "active" : ""}
-            onClick={() => setMode("direct_agent")}
-          >
-            Direct Agent
+      <div className="top-panel">
+        <form className="command-panel" onSubmit={handleSubmit}>
+          <div className="brand-block">
+            <div className="brand-title">Arc-Tech Canvas</div>
+            <div className="brand-subtitle">Visual command surface for implementation tasks</div>
+          </div>
+          <div className="mode-group" role="group" aria-label="Mode">
+            <button
+              type="button"
+              className={mode === "direct_agent" ? "active" : ""}
+              onClick={() => setMode("direct_agent")}
+            >
+              Direct Agent
+            </button>
+            <button
+              type="button"
+              className={mode === "plan_card_only" ? "active" : ""}
+              onClick={() => setMode("plan_card_only")}
+            >
+              Plan Card Only
+            </button>
+          </div>
+          <input
+            value={command}
+            onChange={(event) => setCommand(event.target.value)}
+            placeholder="/implement Add a health check endpoint"
+            spellCheck={false}
+          />
+          <button className="submit-button" type="submit" disabled={busy || connecting || directAgentBlocked}>
+            {busy ? "Submitting" : "Run"}
           </button>
-          <button
-            type="button"
-            className={mode === "plan_card_only" ? "active" : ""}
-            onClick={() => setMode("plan_card_only")}
-          >
-            Plan Card Only
+          <button className="refresh-button" type="button" onClick={() => void refresh()} disabled={busy || connecting}>
+            Refresh
           </button>
-        </div>
-        <input
-          value={command}
-          onChange={(event) => setCommand(event.target.value)}
-          placeholder="/implement Add a health check endpoint"
-          spellCheck={false}
-        />
-        <button className="submit-button" type="submit" disabled={busy}>
-          {busy ? "Submitting" : "Run"}
-        </button>
-        <button className="refresh-button" type="button" onClick={() => void refresh()} disabled={busy}>
-          Refresh
-        </button>
-        <div className="status-strip" aria-live="polite">
-          {error ?? status}
-        </div>
-      </form>
+          <div className="status-strip" aria-live="polite">
+            {error ?? status}
+          </div>
+        </form>
+        <form className="repo-panel" onSubmit={handleConnectRemote}>
+          <div className={`repo-state ${project?.prReady ? "ready" : "blocked"}`}>
+            <strong>{project?.prReady ? "PR ready" : "PR blocked"}</strong>
+            <span>{project ? projectStatusLine(project) : "Loading repo status"}</span>
+          </div>
+          <input
+            value={remoteUrl}
+            onChange={(event) => setRemoteUrl(event.target.value)}
+            placeholder="https://github.com/owner/repo.git"
+            spellCheck={false}
+            aria-label="Git remote URL"
+          />
+          <button className="connect-button" type="submit" disabled={connecting || busy}>
+            {connecting ? "Connecting" : "Connect Repo"}
+          </button>
+        </form>
+      </div>
       <div className="canvas-frame">
         <Excalidraw
           excalidrawAPI={(api) => {
@@ -311,4 +371,16 @@ function latestActivity(cards: ArcCard[]): string | null {
     .sort()
     .at(-1);
   return latest ? latest.replace("T", " ").slice(0, 19) : null;
+}
+
+function projectStatusLine(project: ArcProject): string {
+  const remote = project.remoteUrl ?? project.remoteStatus;
+  const pr = project.githubPrEnabled ? "PR config on" : "PR config off";
+  const ready = project.prReady ? "ready" : project.blockers.join(" ");
+  return `${remote} · ${pr} · ${ready}`;
+}
+
+function projectBlockerText(project: ArcProject | null): string {
+  if (!project) return "Project PR status is still loading.";
+  return project.blockers.length ? project.blockers.join(" ") : "Project is ready.";
 }

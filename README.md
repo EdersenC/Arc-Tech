@@ -148,8 +148,10 @@ The command panel accepts:
 
 Modes:
 
-- **Direct Agent** calls `POST /api/implement`, creates the same SQLite task/worktree/queued message path as Discord, starts the task immediately, and draws a task card on the canvas.
+- **Direct Agent** calls `POST /api/implement`, creates the same SQLite task/worktree/queued message path as Discord, starts the task immediately, and draws a task card on the canvas. Direct Agent requires `GITHUB_PR_ENABLED=true` plus a connected project remote so completed work can push a branch and create a PR.
 - **Plan Card Only** persists a visual planning card and does not start Codex.
+
+Use the repo panel to connect the Excalidraw project to a GitHub remote. The API exposes `GET /api/excalidraw/project` for readiness and `POST /api/excalidraw/project/remote` with `{ "remoteUrl": "https://github.com/owner/repo.git" }` to configure/fetch the repo. If PRs are disabled or no remote is connected, Direct Agent is blocked before task creation instead of silently completing local-only work without a PR.
 
 Every Arc-generated Excalidraw element includes `customData.arc` with the card id, source, command, status, task id, and latest progress when one exists. The UI polls `GET /api/tasks` every few seconds and updates card text/status from SQLite. Direct agent cards grow as runner information arrives, including phase, latest activity, command events, changed files, queue counts, summaries, errors, and PR links. Moving or deleting cards is visual-only for the MVP and never deletes the real task.
 

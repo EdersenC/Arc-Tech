@@ -54,6 +54,21 @@ export interface ArcTask {
   updatedAt: string;
 }
 
+export interface ArcProject {
+  projectId: number;
+  projectName: string;
+  repoPath: string;
+  worktreesPath: string;
+  remoteStatus: "missing" | "configured" | "skipped";
+  remoteUrl: string | null;
+  githubPrEnabled: boolean;
+  githubPrFeedbackEnabled: boolean;
+  githubBaseBranch: string;
+  githubRemote: string;
+  prReady: boolean;
+  blockers: string[];
+}
+
 export interface ImplementResponse {
   taskId: string | null;
   status: ArcStatus;
@@ -61,6 +76,12 @@ export interface ImplementResponse {
   title: string;
   branch: string | null;
   card: ArcCard;
+}
+
+export interface ConnectProjectRemoteResponse {
+  project: ArcProject;
+  baseBranch: string;
+  summary: string;
 }
 
 export async function submitImplement(message: string, mode: ArcCardMode, x: number, y: number): Promise<ImplementResponse> {
@@ -74,6 +95,20 @@ export async function submitImplement(message: string, mode: ArcCardMode, x: num
       x,
       y,
     }),
+  });
+  return parseJsonResponse(response);
+}
+
+export async function getProject(): Promise<{ project: ArcProject }> {
+  const response = await fetch("/api/excalidraw/project");
+  return parseJsonResponse(response);
+}
+
+export async function connectProjectRemote(remoteUrl: string): Promise<ConnectProjectRemoteResponse> {
+  const response = await fetch("/api/excalidraw/project/remote", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ remoteUrl }),
   });
   return parseJsonResponse(response);
 }
@@ -93,9 +128,10 @@ export async function updateCardPosition(card: Pick<ArcCard, "id" | "x" | "y" | 
 }
 
 async function parseJsonResponse<T>(response: Response): Promise<T> {
-  const body = (await response.json().catch(() => ({}))) as { error?: string };
+  const body = (await response.json().catch(() => ({}))) as { error?: string; code?: string; project?: ArcProject };
   if (!response.ok) {
-    throw new Error(body.error ?? `Request failed with ${response.status}`);
+    const suffix = body.code ? ` (${body.code})` : "";
+    throw new Error(`${body.error ?? `Request failed with ${response.status}`}${suffix}`);
   }
   return body as T;
 }

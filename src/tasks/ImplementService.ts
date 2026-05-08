@@ -29,6 +29,12 @@ export interface RunImplementResult {
   started: boolean;
 }
 
+export interface ConfigureProjectRemoteResult {
+  project: Project;
+  baseBranch: string;
+  summary: string;
+}
+
 export class ImplementService {
   constructor(
     private readonly projects: ProjectStore,
@@ -99,6 +105,20 @@ export class ImplementService {
     const updated = this.tasks.update(task.id, { status: "QUEUED", error: null });
     this.pump.enqueue(updated.id);
     return updated;
+  }
+
+  async configureProjectRemote(project: Project, remoteUrl: string): Promise<ConfigureProjectRemoteResult> {
+    const trimmed = remoteUrl.trim();
+    if (!trimmed) {
+      throw new Error("Git remote URL is required.");
+    }
+    const pulled = await this.git.setProjectOriginAndPull(project, trimmed);
+    const updated = this.projects.updateRemote(project.id, { remoteUrl: trimmed, remoteStatus: "configured" });
+    return {
+      project: updated,
+      baseBranch: pulled.baseBranch,
+      summary: pulled.summary,
+    };
   }
 
   async syncProjectOrigin(project: Project): Promise<Project> {
