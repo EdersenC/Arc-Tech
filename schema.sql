@@ -54,8 +54,6 @@ CREATE TABLE IF NOT EXISTS tasks (
 
 CREATE INDEX IF NOT EXISTS idx_tasks_thread ON tasks(discord_thread_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_project_status ON tasks(project_id, status);
-CREATE INDEX IF NOT EXISTS idx_tasks_parent_orchestration ON tasks(parent_orchestration_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_orchestration_agent ON tasks(orchestration_agent_id);
 
 CREATE TABLE IF NOT EXISTS orchestrations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
