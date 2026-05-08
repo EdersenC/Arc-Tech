@@ -32,11 +32,11 @@ export class GitManager {
   async createTaskWorktree(
     project: Project,
     task: Task,
-    options: { reset?: boolean } = {},
+    options: { reset?: boolean; branchName?: string; worktreeName?: string } = {},
   ): Promise<{ baseBranch: string; taskBranch: string; worktreePath: string }> {
     const baseBranch = await this.ensureProjectRepo(project);
-    const taskBranch = `codex/task-${task.projectTaskNumber}`;
-    const worktreePath = path.join(project.worktreesPath, `task-${task.projectTaskNumber}`);
+    const taskBranch = options.branchName ?? `codex/task-${task.projectTaskNumber}`;
+    const worktreePath = path.join(project.worktreesPath, options.worktreeName ?? `task-${task.projectTaskNumber}`);
 
     if (!options.reset && (await this.isGitRepo(worktreePath))) {
       return { baseBranch, taskBranch, worktreePath };
@@ -136,11 +136,17 @@ export class GitManager {
     return branchStat.trim() || "No file changes.";
   }
 
-  async createTaskPullRequest(task: Task, title: string, body: string): Promise<string> {
+  async createTaskPullRequest(
+    task: Task,
+    title: string,
+    body: string,
+    options: { remote?: string; baseBranch?: string } = {},
+  ): Promise<string> {
     const worktreePath = requireWorktree(task);
     const taskBranch = requireBranch(task);
-    const baseBranch = task.baseBranch ?? "main";
-    await this.git(["push", "-u", "origin", `HEAD:${taskBranch}`], worktreePath);
+    const baseBranch = task.baseBranch ?? options.baseBranch ?? "main";
+    const remote = options.remote ?? "origin";
+    await this.git(["push", "-u", remote, `HEAD:${taskBranch}`], worktreePath);
 
     const existing = await this.gh(["pr", "view", taskBranch, "--json", "url", "--jq", ".url"], worktreePath, {
       allowFailure: true,

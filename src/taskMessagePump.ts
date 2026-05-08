@@ -2,6 +2,7 @@ import type { Client } from "discord.js";
 import { CodexProcessError, type CodexRunner } from "./codexRunner.js";
 import type { CodexEventRouter } from "./codex/CodexEventRouter.js";
 import type { GitManager } from "./git.js";
+import type { GitHubPRService } from "./github/GitHubPRService.js";
 import type { TaskProgressService } from "./progress/TaskProgressService.js";
 import type { ProjectStore, TaskStore } from "./stores.js";
 import { taskDisplayNumber, taskLabel } from "./taskLabels.js";
@@ -21,6 +22,7 @@ export class TaskMessagePump {
     private readonly runner: CodexRunner,
     private readonly router: CodexEventRouter,
     private readonly progress: TaskProgressService,
+    private readonly githubPrService?: GitHubPRService,
   ) {}
 
   get activeTasks(): ReadonlySet<number> {
@@ -129,13 +131,16 @@ export class TaskMessagePump {
 
         const diffStat = await this.git.commitTaskChanges(task, `Codex task ${taskDisplayNumber(task)} follow-up`);
         const pullRequestUrl = await this.createPullRequestIfPossible(task, result.finalSummary, diffStat);
-        const completionSummary = buildCompletionSummary(result.finalSummary, pullRequestUrl);
+        const retainedPullRequestUrl = pullRequestUrl ?? task.pullRequestUrl ?? task.prUrl;
+        const completionSummary = buildCompletionSummary(result.finalSummary, retainedPullRequestUrl);
         this.tasks.updateMessagesStatus(queued.map((message) => message.id), "processed");
         task = this.tasks.update(task.id, {
           status: "WAITING_REVIEW",
           codexThreadId: result.codexThreadId ?? task.codexThreadId,
-          pullRequestUrl,
+          pullRequestUrl: retainedPullRequestUrl,
+          prUrl: retainedPullRequestUrl,
           finalSummary: `${completionSummary}\n\nDiff stat:\n${diffStat}`,
+          completionSummary,
           error: null,
         });
         await this.notifyTaskUpdated(task);
@@ -156,12 +161,15 @@ export class TaskMessagePump {
               const recoverySummary =
                 "Codex hit a sandboxed Git metadata write while trying to commit or push, but the orchestrator committed the file changes outside the sandbox.";
               const pullRequestUrl = await this.createPullRequestIfPossible(task, recoverySummary, diffStat);
-              const completionSummary = buildCompletionSummary(recoverySummary, pullRequestUrl);
+              const retainedPullRequestUrl = pullRequestUrl ?? task.pullRequestUrl ?? task.prUrl;
+              const completionSummary = buildCompletionSummary(recoverySummary, retainedPullRequestUrl);
               this.tasks.updateMessagesStatus(queued.map((queuedMessage) => queuedMessage.id), "processed");
               task = this.tasks.update(task.id, {
                 status: "WAITING_REVIEW",
-                pullRequestUrl,
+                pullRequestUrl: retainedPullRequestUrl,
+                prUrl: retainedPullRequestUrl,
                 finalSummary: `${completionSummary}\n\nDiff stat:\n${diffStat}`,
+                completionSummary,
                 error: null,
               });
               await this.notifyTaskUpdated(task);
@@ -216,7 +224,10 @@ export class TaskMessagePump {
     }
 
     try {
-      return await this.git.createTaskPullRequest(
+      if (!this.githubPrService?.isEnabled()) {
+        return null;
+      }
+      return await this.githubPrService.createPrForTask(
         task,
         `Codex task ${taskDisplayNumber(task)}: ${oneLine(task.prompt, 72)}`,
         prBody(task, finalSummary, diffStat),
@@ -249,12 +260,13 @@ ${modeInstruction(task.mode)}
 Modify only this isolated task worktree. Stay on the current task branch.
 
 Primary completion goal:
-- Finish with a committed task branch pushed to origin and a GitHub pull request opened against ${task.baseBranch ?? "main"}.
-- Include the PR URL in your final summary.
-- If a PR already exists for this task branch, update/reuse it and include its URL.
+- Finish with a concise summary and committed task branch.
+- If GitHub access and gh are available, push the branch, open or update a pull request against ${task.baseBranch ?? "main"}, and include its URL.
+- If PR creation is unavailable, keep the local branch/worktree and summarize the reason.
 
 Git rules:
-- You should run git add, git commit, git push, and gh pr create for the current task branch when the task produced code changes.
+- You may run git add and git commit for the current task branch when the task produced code changes.
+- You may run git push and gh pr create only if the configured remote and gh are available.
 - Do not merge to main.
 - Do not checkout another branch unless you return to the current task branch before editing.
 - Do not edit files in the base repo or in other task worktrees.

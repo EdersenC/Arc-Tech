@@ -59,7 +59,13 @@ export interface Task {
   liveStatusMessageId: string | null;
   controlPanelMessageId: string | null;
   pullRequestUrl: string | null;
+  prUrl: string | null;
   finalSummary: string | null;
+  completionSummary: string | null;
+  discordThreadUrl: string | null;
+  parentOrchestrationId: number | null;
+  orchestrationAgentId: number | null;
+  agentRole: string | null;
   error: string | null;
   createdAt: string;
   updatedAt: string;

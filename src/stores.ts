@@ -52,7 +52,13 @@ type TaskRow = {
   live_status_message_id: string | null;
   control_panel_message_id: string | null;
   pull_request_url: string | null;
+  pr_url: string | null;
   final_summary: string | null;
+  completion_summary: string | null;
+  discord_thread_url: string | null;
+  parent_orchestration_id: number | null;
+  orchestration_agent_id: number | null;
+  agent_role: string | null;
   error: string | null;
   created_at: string;
   updated_at: string;
@@ -253,6 +259,22 @@ export class TaskStore {
     return rows.map(mapTask);
   }
 
+  listTasksWithPullRequests(): Task[] {
+    const rows = this.db
+      .prepare(
+        `
+        SELECT *
+        FROM tasks
+        WHERE COALESCE(pull_request_url, pr_url) IS NOT NULL
+          AND COALESCE(pull_request_url, pr_url) <> ''
+          AND status NOT IN ('ABANDONED', 'CANCELED')
+        ORDER BY datetime(updated_at) DESC, id DESC
+      `,
+      )
+      .all() as TaskRow[];
+    return rows.map(mapTask);
+  }
+
   update(
     id: number,
     fields: Partial<
@@ -268,7 +290,13 @@ export class TaskStore {
         | "liveStatusMessageId"
         | "controlPanelMessageId"
         | "pullRequestUrl"
+        | "prUrl"
         | "finalSummary"
+        | "completionSummary"
+        | "discordThreadUrl"
+        | "parentOrchestrationId"
+        | "orchestrationAgentId"
+        | "agentRole"
         | "error"
         | "model"
         | "effort"
@@ -288,7 +316,13 @@ export class TaskStore {
       liveStatusMessageId: "live_status_message_id",
       controlPanelMessageId: "control_panel_message_id",
       pullRequestUrl: "pull_request_url",
+      prUrl: "pr_url",
       finalSummary: "final_summary",
+      completionSummary: "completion_summary",
+      discordThreadUrl: "discord_thread_url",
+      parentOrchestrationId: "parent_orchestration_id",
+      orchestrationAgentId: "orchestration_agent_id",
+      agentRole: "agent_role",
       error: "error",
       model: "model",
       effort: "effort",
@@ -440,7 +474,13 @@ function mapTask(row: TaskRow): Task {
     liveStatusMessageId: row.live_status_message_id,
     controlPanelMessageId: row.control_panel_message_id,
     pullRequestUrl: row.pull_request_url,
+    prUrl: row.pr_url,
     finalSummary: row.final_summary,
+    completionSummary: row.completion_summary,
+    discordThreadUrl: row.discord_thread_url,
+    parentOrchestrationId: row.parent_orchestration_id,
+    orchestrationAgentId: row.orchestration_agent_id,
+    agentRole: row.agent_role,
     error: row.error,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

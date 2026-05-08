@@ -22,6 +22,11 @@ DATABASE_PATH=./data/app.sqlite
 WORKSPACES_DIR=./workspaces
 CODEX_BIN=codex
 ENABLE_MESSAGE_CONTENT_INTENT=false
+GITHUB_PR_ENABLED=false
+GITHUB_PR_FEEDBACK_ENABLED=false
+GITHUB_PR_FEEDBACK_POLL_MS=60000
+GITHUB_BASE_BRANCH=main
+GITHUB_REMOTE=origin
 ```
 
 `DISCORD_GUILD_ID` is required because commands are registered as guild commands.
@@ -38,6 +43,9 @@ The runtime is intentionally small and centered on the Discord Gateway client in
 - `src/taskMessagePump.ts` serializes queued task-thread messages into Codex runs and records completion/failure state.
 - `src/codexRunner.ts` shells out to `codex exec --json`; `src/codex/*` parses and routes the JSONL event stream.
 - `src/progress/TaskProgressService.ts` keeps the live status message updated and posts major task events back to Discord.
+- `src/orchestrations/*` owns the reusable planner-to-agent-fleet workflow behind `/orchestrate`.
+- `src/tasks/TaskService.ts` centralizes implementation task creation so `/implement` and orchestration children use the same backend path.
+- `src/cli/arcctl.ts` writes optional local bridge requests/events under `.codex-bridge/` for future custom UI or skill workflows.
 
 ## Discord Setup
 
@@ -103,6 +111,7 @@ npm start
 ## Slash Commands
 
 - `/implement msg:<text>` creates a SQLite task, creates an isolated git worktree and branch, creates a Discord task thread, stores the request, and posts task controls. Codex does not start until you press **Start**.
+- `/orchestrate msg:<text>` creates a parent orchestration thread, starts a read-only planner Codex run, lets you chat with the planner, and launches 2-10 visible child implementation agents when you press **Orchestrate**.
 - `/status` shows the current channel project, remote state, repo path, and recent tasks.
 
 Task numbers shown in Discord are local to each project/channel. A new project starts at task `#1` even though SQLite keeps a separate internal global row id for component routing.
@@ -130,8 +139,89 @@ The bot keeps durable state in SQLite at `DATABASE_PATH`. The schema contains:
 - `tasks`: one row per implementation task, including the visible project-local task number, branch/worktree paths, selected model/effort/mode/sandbox, PR URL, and final summary.
 - `task_messages`: queued, processing, processed, and failed user messages for each task thread.
 - `codex_events`: raw parsed Codex JSONL events used for live progress and diagnostics.
+- `orchestrations`: parent planner rooms, bounds, final AgentFleetPlan JSON, and status.
+- `orchestration_agents`: child agent rows linked to visible task threads, branches, worktrees, summaries, and optional PR URLs.
+- `orchestration_messages`: parent-thread planner conversation history.
 
 Project files live under `WORKSPACES_DIR/<guild>/<project-slug>-<channel-id>/` with a `repo/` base checkout and isolated task worktrees in `worktrees/task-<n>/`. Task branches use `codex/task-<n>`, where `<n>` is the project-local task number shown in Discord.
+
+Orchestration child branches use `codex/orch-<orchestrationId>/agent-<index>-<slug>`. Child worktrees are still isolated under the project `worktrees/` directory.
+
+## Orchestration Workflow
+
+`/orchestrate` is a planner-to-agent-fleet workflow:
+
+1. The app creates a parent orchestration thread/forum post.
+2. A planner Codex run starts in read-only planning mode.
+3. Users chat with the planner in the parent thread or through **Ask Planner**.
+4. The parent control panel can show/improve the plan, set agent bounds, launch, or cancel.
+5. **Orchestrate** asks the planner for strict AgentFleetPlan JSON, validates it, repairs once if needed, and then spawns 2-10 children.
+6. Every child maps to a visible sibling task thread/forum post with its own branch, worktree, task control panel, and auto-started Codex run.
+7. Child completion updates the parent thread with task link, branch, summary, and PR URL when available.
+8. When all children are terminal, the parent posts a fleet summary and moves to review.
+
+The parent thread is the command center. Child threads are sibling task rooms, not nested Discord threads and not hidden background jobs.
+
+Planner runs use:
+
+```bash
+codex exec --cd <projectRepo> --json --sandbox read-only -c approval_policy=never <plannerPrompt>
+```
+
+Child implementation runs use:
+
+```bash
+codex exec --cd <childWorktree> --json --sandbox workspace-write -c approval_policy=never <childPrompt>
+```
+
+`CodexRunner` removes Discord credentials from the child process environment before spawning Codex. Codex must not call Discord APIs directly; the TypeScript app owns Discord.
+
+## Orchestration Controls
+
+Parent custom IDs:
+
+- `orch:ask:<id>`
+- `orch:show-plan:<id>`
+- `orch:improve-plan:<id>`
+- `orch:set-bounds:<id>`
+- `orch:launch:<id>`
+- `orch:cancel:<id>`
+- `orch:agent-status:<id>`
+- `orch:summarize:<id>`
+- `orch:pause-fleet:<id>`
+- `orch:spawn-extra:<id>`
+
+Bounds are clamped to a hard minimum of 2 and hard maximum of 10. Children auto-start in the MVP.
+
+## Optional PRs
+
+PR URLs are optional. With `GITHUB_PR_ENABLED=false`, tasks still commit locally and report branch/worktree paths. With GitHub PRs enabled and `gh` configured, the app can push task branches and create or update PRs. Missing GitHub integration does not fail an orchestration.
+
+## PR Feedback Worker
+
+When `GITHUB_PR_FEEDBACK_ENABLED=true`, the runner polls tracked open PRs created by agent tasks. The worker uses `gh api` to read PR issue comments, review summaries, and inline review comments. New feedback is deduped in SQLite, queued as a normal task follow-up, and the owning agent task is automatically enqueued.
+
+The worker posts a short visibility update in the child task thread and parent orchestration thread when applicable. Codex receives only the task follow-up prompt in its existing worktree and branch; it does not receive Discord credentials and does not call Discord APIs.
+
+Polling defaults to the PR feature flag. Set `GITHUB_PR_FEEDBACK_POLL_MS` to control the interval.
+
+## arcctl and Skills
+
+`arcctl` is a lightweight local bridge for future custom UI and skill flows. It never calls Discord APIs and does not require `DISCORD_TOKEN`.
+
+```bash
+tsx src/cli/arcctl.ts orchestrate status
+tsx src/cli/arcctl.ts orchestrate propose-plan --file fleet-plan.json
+tsx src/cli/arcctl.ts orchestrate spawn --file fleet-plan.json
+tsx src/cli/arcctl.ts orchestrate report-agent-done --agent-id 1 --summary-file summary.md --pr-url https://github.com/owner/repo/pull/1
+```
+
+Bridge files are generated at runtime under `.codex-bridge/requests/`, `.codex-bridge/responses/`, and `.codex-bridge/events.jsonl`. The directory is gitignored to keep bridge traffic out of commits.
+
+The repo also includes:
+
+- `.agents/skills/arc-orchestrator`
+- `.agents/skills/arc-implementation-agent`
 
 ## Task Controls
 
@@ -200,15 +290,15 @@ Each Codex process gets a private writable temp directory at `.codex-tmp/` insid
 
 Implementation tasks run with the task worktree as `--cd` and the base repo Git metadata directory added with `--add-dir <projectRepo>/.git`. This keeps file edits scoped to the task worktree while allowing Git commands in that worktree to update their real worktree metadata. The runner also enables workspace-write network access so Codex can run `git push` and `gh pr create` from the task branch without using `--dangerously-bypass-approvals-and-sandbox`.
 
-Codex's primary completion goal for implementation tasks is to commit the task branch, push it to `origin`, open or update a GitHub PR against the base branch, and include the PR URL in its final summary. It is instructed not to merge to main or edit files in the base repo or other task worktrees.
+Codex's primary completion goal for implementation tasks is to finish with a clear summary, committed task branch, and PR URL when PR creation is available. It is instructed not to merge to main or edit files in the base repo or other task worktrees.
 
 After Codex finishes, the orchestrator still runs a recovery/fallback path:
 
 - removes `.codex-tmp/`
 - commits any remaining uncommitted task changes
-- pushes the task branch when needed
-- creates or reuses a GitHub pull request with `gh`
-- posts the PR link in the task thread
+- pushes the task branch when GitHub PR integration is enabled
+- creates or reuses a GitHub pull request with `gh` when available
+- posts the PR link in the task thread when one exists
 
 ## Live Progress
 

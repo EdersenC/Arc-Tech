@@ -306,8 +306,15 @@ export class TaskControlPanelService {
   }
 
   private panelContent(task: Task): string {
+    const orchestration = task.parentOrchestrationId
+      ? `Parent orchestration: #${task.parentOrchestrationId}
+Orchestration agent: ${task.orchestrationAgentId ?? "unknown"}
+Agent role: ${task.agentRole ?? "unknown"}
+`
+      : "";
     return `Task Control Panel
 Task: ${taskLabel(task)}
+${orchestration}Thread: ${task.discordThreadUrl ?? (task.discordThreadId ? `<#${task.discordThreadId}>` : "not created")}
 Status: ${task.status}
 Branch: ${task.taskBranch ?? "not created"}
 Worktree: ${task.worktreePath ?? "not created"}
@@ -316,7 +323,7 @@ Model: ${task.model}
 Effort: ${task.effort}
 Sandbox: ${task.sandbox}
 Merge: ${task.mergeStatus}
-PR: ${task.pullRequestUrl ?? "none"}`;
+PR: ${task.pullRequestUrl ?? task.prUrl ?? "none"}`;
   }
 }
 

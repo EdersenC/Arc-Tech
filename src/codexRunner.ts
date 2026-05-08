@@ -102,7 +102,7 @@ export class CodexCliRunner implements CodexRunner {
       const child = spawn(this.codexBin, args, {
         cwd: options.worktreePath,
         env: {
-          ...process.env,
+          ...codexEnv(),
           NO_COLOR: "1",
           TMPDIR: codexTempDir,
           TMP: codexTempDir,
@@ -179,6 +179,14 @@ export class CodexCliRunner implements CodexRunner {
   }
 }
 
+function codexEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.DISCORD_TOKEN;
+  delete env.DISCORD_CLIENT_SECRET;
+  delete env.DISCORD_PUBLIC_KEY;
+  return env;
+}
+
 async function prepareCodexTempDir(worktreePath: string): Promise<string> {
   const dir = path.join(worktreePath, ".codex-tmp");
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
@@ -226,12 +234,13 @@ ${messages}
 Continue modifying the same isolated task worktree. Stay on the current task branch.
 
 Primary completion goal:
-- Finish with a committed task branch pushed to origin and a GitHub pull request opened against the task base branch.
-- Include the PR URL in your final summary.
-- If a PR already exists for this task branch, update/reuse it and include its URL.
+- Finish with a concise summary and committed task branch.
+- If GitHub access and gh are available, push the branch, open or update a pull request against the task base branch, and include its URL.
+- If PR creation is unavailable, keep the local branch/worktree and summarize the reason.
 
 Git rules:
-- You should run git add, git commit, git push, and gh pr create for the current task branch when the task produced code changes.
+- You may run git add and git commit for the current task branch when the task produced code changes.
+- You may run git push and gh pr create only if the configured remote and gh are available.
 - Do not merge to main.
 - Do not checkout another branch unless you return to the current task branch before editing.
 - Do not edit files in the base repo or in other task worktrees.

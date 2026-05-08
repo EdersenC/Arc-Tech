@@ -9,25 +9,47 @@ import {
   type AnyThreadChannel,
   type Channel,
   type ChatInputCommandInteraction,
+  type TextBasedChannel,
 } from "discord.js";
 import { CodexCliRunner } from "./codexRunner.js";
 import { CodexEventRouter } from "./codex/CodexEventRouter.js";
 import { config } from "./config.js";
 import { AppDatabase } from "./db.js";
 import { GitManager } from "./git.js";
+import { GitHubPRFeedbackService } from "./github/GitHubPRFeedbackService.js";
+import { GitHubPRService } from "./github/GitHubPRService.js";
+import { PullRequestFeedbackRepo } from "./github/PullRequestFeedbackRepo.js";
+import { PullRequestFeedbackWorker } from "./github/PullRequestFeedbackWorker.js";
+import { OrchestrationAgentSpawner } from "./orchestrations/OrchestrationAgentSpawner.js";
+import { OrchestrationControlPanel } from "./orchestrations/OrchestrationControlPanel.js";
+import { OrchestrationPlannerService } from "./orchestrations/OrchestrationPlannerService.js";
+import { OrchestrationResultCollector } from "./orchestrations/OrchestrationResultCollector.js";
+import { OrchestrationService } from "./orchestrations/OrchestrationService.js";
+import { chunkDiscordMessage } from "./orchestrations/OrchestrationStatusRenderer.js";
+import { OrchestrationAgentsRepo } from "./orchestrations/repos/OrchestrationAgentsRepo.js";
+import { OrchestrationMessagesRepo } from "./orchestrations/repos/OrchestrationMessagesRepo.js";
+import { OrchestrationsRepo } from "./orchestrations/repos/OrchestrationsRepo.js";
 import { TaskProgressService } from "./progress/TaskProgressService.js";
 import { ProjectStore, TaskStore } from "./stores.js";
 import { TaskControlPanelService } from "./taskControlPanel.js";
 import { taskDisplayNumber, taskLabel } from "./taskLabels.js";
 import { TaskMessagePump } from "./taskMessagePump.js";
+import { TaskService } from "./tasks/TaskService.js";
 import { detectThreadShortcut, isClosedTaskStatus, isMessageInThread } from "./threadRouting.js";
 import type { Project, Task } from "./types.js";
 
 const database = new AppDatabase(config.databasePath);
 const projects = new ProjectStore(database.db, config.workspacesDir);
 const tasks = new TaskStore(database.db);
+const orchestrations = new OrchestrationsRepo(database.db);
+const orchestrationAgents = new OrchestrationAgentsRepo(database.db);
+const orchestrationMessages = new OrchestrationMessagesRepo(database.db);
+const pullRequestFeedback = new PullRequestFeedbackRepo(database.db);
 const git = new GitManager();
+const githubPr = new GitHubPRService(git, config);
+const githubPrFeedback = new GitHubPRFeedbackService();
 const runner = new CodexCliRunner(config.codexBin);
+const taskService = new TaskService(projects, tasks, git);
 const gatewayIntents = [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages];
 if (config.enableMessageContentIntent) {
   gatewayIntents.push(GatewayIntentBits.MessageContent);
@@ -41,13 +63,69 @@ const client = new Client({
 });
 const progress = new TaskProgressService(client, tasks);
 const codexEventRouter = new CodexEventRouter(tasks, progress);
-const pump = new TaskMessagePump(client, projects, tasks, git, runner, codexEventRouter, progress);
+const pump = new TaskMessagePump(client, projects, tasks, git, runner, codexEventRouter, progress, githubPr);
 const controlPanel = new TaskControlPanelService(client, tasks, projects, git, pump);
-pump.onTaskUpdated((task) => controlPanel.updateControlPanel(task));
+const orchestrationService = new OrchestrationService(orchestrations, orchestrationAgents, orchestrationMessages);
+const planner = new OrchestrationPlannerService(orchestrations, orchestrationMessages, projects, git, runner);
+let orchestrationControlPanel: OrchestrationControlPanel;
+const spawner = new OrchestrationAgentSpawner(orchestrations, orchestrationAgents, tasks, taskService, {
+  createChildTaskRoom: async ({ task, title, message }) => {
+    const room = await createTaskRoomInChannel(client, task.channelId, title, message, `Orchestration child task ${task.id}`);
+    if (!room.ok) {
+      throw new Error(room.error);
+    }
+    if (room.sendTaskMessage) {
+      await room.thread.send(truncate(message, 1900));
+    }
+    return { threadId: room.thread.id, threadUrl: room.thread.url };
+  },
+  sendChildControlPanel: (task) => controlPanel.sendControlPanel(task),
+  startChildTask: async (task) => {
+    const updated = tasks.update(task.id, { status: "QUEUED", error: null });
+    pump.enqueue(updated.id);
+  },
+  postToParent: async (orchestration, content) => {
+    await postToOrchestrationParent(orchestration.discordThreadId, content);
+  },
+  updateParentControlPanel: async (orchestrationId) => {
+    await orchestrationControlPanel.updateControlPanel(orchestrationId);
+  },
+});
+orchestrationControlPanel = new OrchestrationControlPanel(
+  client,
+  orchestrations,
+  orchestrationAgents,
+  orchestrationService,
+  planner,
+  spawner,
+);
+const orchestrationResultCollector = new OrchestrationResultCollector(
+  client,
+  orchestrations,
+  orchestrationAgents,
+  tasks,
+  (orchestrationId) => orchestrationControlPanel.updateControlPanel(orchestrationId),
+);
+const pullRequestFeedbackWorker = new PullRequestFeedbackWorker(
+  { enabled: config.githubPrFeedbackEnabled, pollMs: config.githubPrFeedbackPollMs },
+  client,
+  tasks,
+  orchestrations,
+  orchestrationAgents,
+  pullRequestFeedback,
+  githubPrFeedback,
+  pump,
+  (orchestrationId) => orchestrationControlPanel.updateControlPanel(orchestrationId),
+);
+pump.onTaskUpdated(async (task) => {
+  await controlPanel.updateControlPanel(task);
+  await orchestrationResultCollector.handleTaskUpdated(task);
+});
 
 client.once(Events.ClientReady, (readyClient) => {
   console.log(`Discord bot ready as ${readyClient.user.tag}`);
   pump.restoreQueuedWork();
+  pullRequestFeedbackWorker.start();
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -56,10 +134,19 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (await controlPanel.handleButton(interaction)) {
         return;
       }
+      if (await orchestrationControlPanel.handleButton(interaction)) {
+        return;
+      }
     }
 
     if (interaction.isStringSelectMenu()) {
       if (await controlPanel.handleSelectMenu(interaction)) {
+        return;
+      }
+    }
+
+    if (interaction.isModalSubmit()) {
+      if (await orchestrationControlPanel.handleModalSubmit(interaction)) {
         return;
       }
     }
@@ -83,6 +170,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (interaction.commandName === "implement") {
       await handleImplement(interaction);
+      return;
+    }
+
+    if (interaction.commandName === "orchestrate") {
+      await handleOrchestrate(interaction);
       return;
     }
 
@@ -129,7 +221,7 @@ async function handleImplement(interaction: ChatInputCommandInteraction): Promis
     channelName: projectChannel.name,
   });
   project = await syncProjectOrigin(project);
-  let task = tasks.create(project, msg, interaction.user.id);
+  let task = taskService.createImplementationTask({ project, prompt: msg, requestedBy: interaction.user.id });
   if (project.remoteStatus === "configured") {
     await git.pullProjectOrigin(project);
   }
@@ -156,7 +248,7 @@ async function handleImplement(interaction: ChatInputCommandInteraction): Promis
     return;
   }
 
-  task = tasks.update(task.id, { discordThreadId: taskRoom.thread.id });
+  task = tasks.update(task.id, { discordThreadId: taskRoom.thread.id, discordThreadUrl: taskRoom.thread.url });
   if (taskRoom.sendTaskMessage) {
     try {
       await taskRoom.thread.send(taskMessage);
@@ -210,6 +302,70 @@ async function handleImplement(interaction: ChatInputCommandInteraction): Promis
   await interaction.editReply(`Created task ${taskLabel(task)} in <#${taskRoom.thread.id}>. Use Start in the task control panel when ready.`);
 }
 
+async function handleOrchestrate(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  if (!interaction.guildId) {
+    await interaction.editReply("This bot only supports guild channels.");
+    return;
+  }
+
+  const msg = interaction.options.getString("msg", true);
+  const projectChannel = await resolveProjectChannel(interaction);
+  let project = projects.getOrCreate({
+    guildId: interaction.guildId,
+    channelId: projectChannel.id,
+    channelName: projectChannel.name,
+  });
+  project = await syncProjectOrigin(project);
+  const orchestration = orchestrationService.createOrchestration(project, interaction.user, msg);
+  orchestrationMessages.create(orchestration.id, "user", msg, {
+    discordMessageId: null,
+    authorUserId: interaction.user.id,
+    metadata: { source: "slash-command" },
+  });
+
+  const title = `Orchestration #${orchestration.id} - ${oneLine(msg, 70)}`;
+  const initialMessage = `Orchestration #${orchestration.id}
+
+Goal:
+${msg}
+
+The planner will ask questions, propose architecture, and keep a current plan here. Use the control panel to show or improve the plan, set bounds, and launch child agents.`;
+  const room = await createTaskRoomInChannel(
+    client,
+    projectChannel.id,
+    title,
+    initialMessage,
+    `Orchestration ${orchestration.id}`,
+    String(orchestration.id),
+  );
+  if (!room.ok) {
+    orchestrationService.updateStatus(orchestration.id, "FAILED");
+    await interaction.editReply(truncate(`Created orchestration #${orchestration.id}, but could not create the parent thread.\n\n${room.error}`, 1900));
+    return;
+  }
+
+  orchestrationService.updateThread(orchestration.id, room.thread.id, room.thread.url);
+  if (room.sendTaskMessage) {
+    await room.thread.send(initialMessage);
+  }
+  await orchestrationControlPanel.sendControlPanel(orchestrations.findById(orchestration.id) ?? orchestration);
+  await interaction.editReply(`Created orchestration #${orchestration.id} in <#${room.thread.id}>. Planner is starting.`);
+
+  void planner
+    .startPlanner(orchestration.id)
+    .then(async (response) => {
+      await postToOrchestrationParent(room.thread.id, response);
+      await orchestrationControlPanel.updateControlPanel(orchestration.id);
+    })
+    .catch(async (error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      orchestrations.updateStatus(orchestration.id, "FAILED");
+      await postToOrchestrationParent(room.thread.id, `Planner failed:\n${truncate(message, 1500)}`);
+      await orchestrationControlPanel.updateControlPanel(orchestration.id);
+    });
+}
+
 async function handleStatus(interaction: ChatInputCommandInteraction): Promise<void> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   if (!interaction.guildId) {
@@ -255,6 +411,7 @@ async function handleThreadMessage(message: Message): Promise<void> {
 
   const task = tasks.getByThreadId(message.channel.id);
   if (!task) {
+    await handleOrchestrationThreadMessage(message);
     return;
   }
   console.log("Matched thread message to task.", { messageId: message.id, taskId: task.id });
@@ -310,6 +467,48 @@ async function handleThreadMessage(message: Message): Promise<void> {
     return;
   }
   pump.enqueue(task.id);
+}
+
+async function handleOrchestrationThreadMessage(message: Message): Promise<void> {
+  const orchestration = orchestrations.findByDiscordThreadId(message.channel.id);
+  if (!orchestration) {
+    return;
+  }
+
+  const content = message.content.trim();
+  if (!content) {
+    await message.reply("I received this orchestration message, but its content was empty. Check the Message Content Intent setting.");
+    return;
+  }
+
+  if (orchestration.status === "CANCELED" || orchestration.status === "COMPLETED" || orchestration.status === "FAILED") {
+    await message.reply(`Orchestration #${orchestration.id} is closed with status ${orchestration.status}.`);
+    return;
+  }
+
+  orchestrationService.appendUserMessage(orchestration.id, {
+    content,
+    discordMessageId: message.id,
+    authorUserId: message.author.id,
+  });
+
+  if (orchestration.status === "RUNNING_AGENTS" || orchestration.status === "LAUNCHING_AGENTS" || orchestration.status === "WAITING_REVIEW") {
+    await message.reply("Stored as a parent-level orchestration instruction. It was not pushed to child agents automatically.");
+    await orchestrationControlPanel.updateControlPanel(orchestration.id);
+    return;
+  }
+
+  await message.react("🧭").catch(() => undefined);
+  try {
+    const response = await planner.continuePlanner(orchestration.id, content);
+    await postToOrchestrationParent(orchestration.discordThreadId, response);
+    await orchestrationControlPanel.updateControlPanel(orchestration.id);
+  } catch (error) {
+    const text = error instanceof Error ? error.message : String(error);
+    orchestrations.updateStatus(orchestration.id, "FAILED");
+    await message.reply(truncate(`Planner failed:\n${text}`, 1900));
+    await orchestrationControlPanel.updateControlPanel(orchestration.id);
+  }
 }
 
 async function resolveProjectChannel(interaction: ChatInputCommandInteraction): Promise<{ id: string; name: string }> {
@@ -406,12 +605,7 @@ async function handleRemoteReply(message: Message, task: Task, content: string):
 }
 
 async function createOrRefreshTaskWorktree(project: Project, task: Task, reset = false): Promise<Task> {
-  const worktree = await git.createTaskWorktree(project, task, { reset });
-  return tasks.update(task.id, {
-    baseBranch: worktree.baseBranch,
-    taskBranch: worktree.taskBranch,
-    worktreePath: worktree.worktreePath,
-  });
+  return taskService.createOrRefreshWorktree(project, task, { reset });
 }
 
 function channelName(channel: Channel): string {
@@ -468,14 +662,27 @@ async function createTaskRoom(
   interaction: ChatInputCommandInteraction,
   taskId: string,
   taskMessage: string,
+  title = `task-${taskId}`,
+  reason = `Checkpoint task ${taskId}`,
+): Promise<TaskRoomResult> {
+  return createTaskRoomInChannel(interaction.client, interaction.channelId, title, taskMessage, reason, taskId);
+}
+
+async function createTaskRoomInChannel(
+  discordClient: Client,
+  channelId: string,
+  title: string,
+  taskMessage: string,
+  reason: string,
+  debugId = title,
 ): Promise<TaskRoomResult> {
   let channel;
   try {
-    channel = await interaction.client.channels.fetch(interaction.channelId);
+    channel = await discordClient.channels.fetch(channelId);
   } catch (error) {
     console.error("Discord API error while fetching interaction channel.", {
-      taskId,
-      channelId: interaction.channelId,
+      taskId: debugId,
+      channelId,
       error,
     });
     return { ok: false, error: formatDiscordError(error) };
@@ -483,15 +690,15 @@ async function createTaskRoom(
 
   if (!channel) {
     console.error("Cannot create task room: fetched channel is null.", {
-      taskId,
-      channelId: interaction.channelId,
+      taskId: debugId,
+      channelId,
     });
     return { ok: false, error: "Discord could not fetch the channel for this interaction." };
   }
 
   const channelType = channel.type;
   const channelDebug = {
-    taskId,
+    taskId: debugId,
     channelId: channel.id,
     channelType,
     channelTypeName: channelTypeName(channelType),
@@ -508,31 +715,31 @@ async function createTaskRoom(
 
     if (channel.type === ChannelType.GuildText) {
       const thread = await channel.threads.create({
-        name: `task-${taskId}`,
+        name: title,
         type: ChannelType.PublicThread,
         autoArchiveDuration: ThreadAutoArchiveDuration.OneHour,
-        reason: `Checkpoint task ${taskId}`,
+        reason,
       });
       return { ok: true, thread, sendTaskMessage: true };
     }
 
     if (channel.type === ChannelType.GuildAnnouncement) {
       const thread = await channel.threads.create({
-        name: `task-${taskId}`,
+        name: title,
         type: ChannelType.AnnouncementThread,
         autoArchiveDuration: ThreadAutoArchiveDuration.OneHour,
-        reason: `Checkpoint task ${taskId}`,
+        reason,
       });
       return { ok: true, thread, sendTaskMessage: true };
     }
 
     if (channel.type === ChannelType.GuildForum) {
       const thread = await channel.threads.create({
-        name: `task-${taskId}`,
+        name: title,
         autoArchiveDuration: ThreadAutoArchiveDuration.OneHour,
         message: { content: taskMessage },
         appliedTags: defaultForumTags(channel.availableTags),
-        reason: `Checkpoint task ${taskId}`,
+        reason,
       });
       return { ok: true, thread, sendTaskMessage: false };
     }
@@ -590,8 +797,23 @@ function safeJson(value: unknown): string {
   }
 }
 
+async function postToOrchestrationParent(threadId: string | null, content: string): Promise<void> {
+  if (!threadId) return;
+  const channel = await client.channels.fetch(threadId).catch(() => null);
+  if (!channel?.isTextBased() || !("send" in channel)) return;
+  const thread = channel as TextBasedChannel & { send: (content: string) => Promise<unknown> };
+  for (const chunk of chunkDiscordMessage(content)) {
+    await thread.send(chunk);
+  }
+}
+
 function truncate(value: string, max: number): string {
   return value.length <= max ? value : `${value.slice(0, max - 14)}...[truncated]`;
+}
+
+function oneLine(value: string, max: number): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  return compact.length <= max ? compact : `${compact.slice(0, max - 3)}...`;
 }
 
 function isRetryMessage(content: string): boolean {
@@ -609,6 +831,7 @@ async function acknowledgeQueuedMessage(message: Message, taskId: number): Promi
 
 function shutdown(): void {
   console.log("Shutting down.");
+  pullRequestFeedbackWorker.stop();
   client.destroy();
   database.close();
   process.exit(0);
