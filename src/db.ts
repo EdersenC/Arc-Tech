@@ -108,6 +108,9 @@ export class AppDatabase {
       );
       CREATE INDEX IF NOT EXISTS idx_orchestration_agents_orchestration ON orchestration_agents(orchestration_id, agent_index);
       CREATE INDEX IF NOT EXISTS idx_orchestration_agents_child_task ON orchestration_agents(child_task_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_orchestration_agents_child_task_unique
+        ON orchestration_agents(child_task_id)
+        WHERE child_task_id IS NOT NULL;
       CREATE TABLE IF NOT EXISTS orchestration_messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         orchestration_id INTEGER NOT NULL REFERENCES orchestrations(id) ON DELETE CASCADE,

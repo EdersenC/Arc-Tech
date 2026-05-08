@@ -216,7 +216,7 @@ tsx src/cli/arcctl.ts orchestrate spawn --file fleet-plan.json
 tsx src/cli/arcctl.ts orchestrate report-agent-done --agent-id 1 --summary-file summary.md --pr-url https://github.com/owner/repo/pull/1
 ```
 
-Bridge files live in `.codex-bridge/requests/`, `.codex-bridge/responses/`, and `.codex-bridge/events.jsonl`.
+Bridge files are generated at runtime under `.codex-bridge/requests/`, `.codex-bridge/responses/`, and `.codex-bridge/events.jsonl`. The directory is gitignored to keep bridge traffic out of commits.
 
 The repo also includes:
 

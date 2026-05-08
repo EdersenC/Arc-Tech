@@ -96,8 +96,11 @@ export class OrchestrationAgentSpawner {
       agentRole: planAgent.role,
     });
     task = await this.taskService.createOrRefreshWorktree(project, task, { branchName, worktreeName });
+    if (!task.worktreePath) {
+      throw new Error(`Task #${task.id} did not get a worktree path for orchestration agent #${agent.id}.`);
+    }
     this.agents.updateChildTask(agent.id, task.id);
-    this.agents.updateBranch(agent.id, branchName, task.worktreePath ?? "");
+    this.agents.updateBranch(agent.id, branchName, task.worktreePath);
 
     const title = `Agent #${agent.agentIndex} / Task #${task.id} - ${agent.agentName}`;
     const room = await this.adapter.createChildTaskRoom({ task, title, message: childThreadMessage(orchestration, agent, task, childPrompt) });

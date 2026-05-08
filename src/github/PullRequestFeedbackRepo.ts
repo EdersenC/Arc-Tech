@@ -49,6 +49,33 @@ export class PullRequestFeedbackRepo {
   constructor(private readonly db: Database.Database) {}
 
   upsertTrackedForTask(task: Task, identity: PullRequestIdentity, prUrl: string): TrackedPullRequest {
+    const existing = this.findByTaskId(task.id) ?? this.findByIdentity(identity);
+    if (existing) {
+      this.db
+        .prepare(
+          `
+          UPDATE tracked_pull_requests
+          SET project_id = @projectId,
+              task_id = @taskId,
+              parent_orchestration_id = @parentOrchestrationId,
+              orchestration_agent_id = @orchestrationAgentId,
+              pr_url = @prUrl,
+              owner = @owner,
+              repo = @repo,
+              number = @number,
+              branch_name = @branchName,
+              state = CASE WHEN state IN ('closed', 'merged') THEN state ELSE 'open' END,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE id = @id
+        `,
+        )
+        .run({
+          ...trackedParams(task, identity, prUrl),
+          id: existing.id,
+        });
+      return requireTracked(this.findByTaskId(task.id), task.id);
+    }
+
     this.db
       .prepare(
         `
@@ -76,40 +103,23 @@ export class PullRequestFeedbackRepo {
           @branchName,
           'open'
         )
-        ON CONFLICT(task_id) DO UPDATE SET
-          parent_orchestration_id = excluded.parent_orchestration_id,
-          orchestration_agent_id = excluded.orchestration_agent_id,
-          pr_url = excluded.pr_url,
-          owner = excluded.owner,
-          repo = excluded.repo,
-          number = excluded.number,
-          branch_name = excluded.branch_name,
-          state = CASE WHEN tracked_pull_requests.state IN ('closed', 'merged') THEN tracked_pull_requests.state ELSE 'open' END,
-          updated_at = CURRENT_TIMESTAMP
       `,
       )
-      .run({
-        projectId: task.projectId,
-        taskId: task.id,
-        parentOrchestrationId: task.parentOrchestrationId,
-        orchestrationAgentId: task.orchestrationAgentId,
-        prUrl,
-        owner: identity.owner,
-        repo: identity.repo,
-        number: identity.number,
-        branchName: task.taskBranch,
-      });
-    const tracked = this.findByTaskId(task.id);
-    if (!tracked) {
-      throw new Error(`Tracked PR for task #${task.id} could not be loaded after upsert.`);
-    }
-    return tracked;
+      .run(trackedParams(task, identity, prUrl));
+    return requireTracked(this.findByTaskId(task.id), task.id);
   }
 
   findByTaskId(taskId: number): TrackedPullRequest | null {
     const row = this.db
       .prepare("SELECT * FROM tracked_pull_requests WHERE task_id = ?")
       .get(taskId) as TrackedPullRequestRow | undefined;
+    return row ? mapTracked(row) : null;
+  }
+
+  findByIdentity(identity: PullRequestIdentity): TrackedPullRequest | null {
+    const row = this.db
+      .prepare("SELECT * FROM tracked_pull_requests WHERE owner = ? AND repo = ? AND number = ?")
+      .get(identity.owner, identity.repo, identity.number) as TrackedPullRequestRow | undefined;
     return row ? mapTracked(row) : null;
   }
 
@@ -237,6 +247,27 @@ export class PullRequestFeedbackRepo {
       )
       .run(taskMessageId, ...eventIds);
   }
+}
+
+function trackedParams(task: Task, identity: PullRequestIdentity, prUrl: string) {
+  return {
+    projectId: task.projectId,
+    taskId: task.id,
+    parentOrchestrationId: task.parentOrchestrationId,
+    orchestrationAgentId: task.orchestrationAgentId,
+    prUrl,
+    owner: identity.owner,
+    repo: identity.repo,
+    number: identity.number,
+    branchName: task.taskBranch,
+  };
+}
+
+function requireTracked(value: TrackedPullRequest | null, taskId: number): TrackedPullRequest {
+  if (!value) {
+    throw new Error(`Tracked PR for task #${taskId} could not be loaded after upsert.`);
+  }
+  return value;
 }
 
 function mapTracked(row: TrackedPullRequestRow): TrackedPullRequest {
