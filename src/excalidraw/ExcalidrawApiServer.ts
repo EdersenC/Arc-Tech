@@ -4,6 +4,7 @@ import path from "node:path";
 import type { AppConfig } from "../config.js";
 import type { PullRequestFeedbackRepo } from "../github/PullRequestFeedbackRepo.js";
 import { stableJson } from "../orchestrations/AgentFleetPlanValidator.js";
+import type { OrchestrationPlannerService } from "../orchestrations/OrchestrationPlannerService.js";
 import type { OrchestrationAgentsRepo } from "../orchestrations/repos/OrchestrationAgentsRepo.js";
 import type { OrchestrationMessagesRepo } from "../orchestrations/repos/OrchestrationMessagesRepo.js";
 import type { OrchestrationsRepo } from "../orchestrations/repos/OrchestrationsRepo.js";
@@ -45,6 +46,7 @@ interface ApiDeps {
   orchestrations: OrchestrationsRepo;
   orchestrationAgents: OrchestrationAgentsRepo;
   orchestrationMessages: OrchestrationMessagesRepo;
+  planner: Pick<OrchestrationPlannerService, "startPlanner" | "continuePlanner" | "generateFleetPlan">;
   workflows: WorkflowService;
   workflowEvents: WorkflowEventBus;
 }
@@ -251,17 +253,17 @@ export class ExcalidrawApiServer {
     });
 
     const workflowState = this.getOrCreateWorkflowForOrchestration(orchestration);
-    const question = plannerQuestion(orchestration, project, 0);
-    const message = plannerQuestionMessage(orchestration.goal, project, question, workflowState.workflow);
-    this.deps.orchestrationMessages.create(orchestration.id, "planner", message, {
-      metadata: { kind: "question", question, workflow: workflowMessageMetadata(workflowState.workflow), plannerPrompt: workflowPlannerPromptContract(workflowState.workflow) },
-    });
     if (workflowState.created) {
       this.deps.workflowEvents.graphCreated(workflowState.workflow);
     } else {
       this.deps.workflowEvents.snapshot(workflowState.workflow);
     }
-    const updated = this.deps.orchestrations.updateStatus(orchestration.id, "waiting_for_user_choice");
+    const message = await this.deps.planner.startPlanner(orchestration.id, {
+      extraInstructions: workflowPlannerPromptContract(workflowState.workflow),
+      metadata: { kind: "planner_turn", workflow: workflowMessageMetadata(workflowState.workflow), plannerPrompt: workflowPlannerPromptContract(workflowState.workflow) },
+    });
+    this.recordPlannerWorkflowPatch(orchestration, message, workflowState.workflow);
+    const updated = this.requireOrchestration(orchestration.id);
     const label = orchestrationParentLabel(updated, project, message);
     const size = orchestrationParentSize(label, undefined, orchestration.maxAgents);
     const card = this.deps.cards.createPlanCard({
@@ -307,7 +309,7 @@ export class ExcalidrawApiServer {
       authorUserId: "excalidraw",
       metadata: { source: "excalidraw", kind: "freeform" },
     });
-    const updated = this.advancePlanner(orchestrationId);
+    const updated = await this.runPlannerTurn(orchestrationId, content);
     this.sendJson(res, 202, this.orchestrationView(updated));
   }
 
@@ -333,7 +335,7 @@ export class ExcalidrawApiServer {
       authorUserId: "excalidraw",
       metadata: { source: "excalidraw", kind: "option_answer", questionId, selectedOptionIds, selectedLabels, customText },
     });
-    const updated = this.advancePlanner(orchestrationId);
+    const updated = await this.runPlannerTurn(orchestrationId, content);
     this.sendJson(res, 202, this.orchestrationView(updated));
   }
 
@@ -362,7 +364,7 @@ export class ExcalidrawApiServer {
         selectedLabels: [option.label],
       },
     });
-    const updated = this.advancePlanner(orchestrationId);
+    const updated = await this.runPlannerTurn(orchestrationId, `Selected: ${option.label}`);
     this.sendJson(res, 202, this.orchestrationView(updated));
   }
 
@@ -379,7 +381,7 @@ export class ExcalidrawApiServer {
       return;
     }
     const body = await readJson(req);
-    const plan = this.ensureFleetPlan(orchestrationId, project);
+    const plan = await this.ensureFleetPlan(orchestrationId, project);
     const current = this.requireOrchestration(orchestrationId);
     this.deps.orchestrations.updateStatus(orchestrationId, "spawning_agents");
     const parentCard = current.parentCardId ? this.deps.cards.findById(current.parentCardId) : null;
@@ -985,7 +987,7 @@ export class ExcalidrawApiServer {
     return updated;
   }
 
-  private ensureFleetPlan(orchestrationId: number, project: Project): AgentFleetPlan {
+  private async ensureFleetPlan(orchestrationId: number, project: Project): Promise<AgentFleetPlan> {
     const orchestration = this.requireOrchestration(orchestrationId);
     const workflow = this.deps.workflows.getCurrentGraphForOrchestration(orchestrationId);
     if (orchestration.finalPlanJson) {
@@ -998,15 +1000,57 @@ export class ExcalidrawApiServer {
         return withWorkflow;
       }
     }
-    const plan = buildFleetPlan(orchestration, project, this.deps.orchestrationMessages.listByOrchestrationId(orchestrationId), workflow ?? undefined);
+    const generated = await this.deps.planner.generateFleetPlan(orchestrationId, {
+      extraInstructions: workflow ? workflowFleetPlanPromptContract(workflow) : undefined,
+      metadata: workflow ? { workflow: workflowMessageMetadata(workflow) } : undefined,
+    });
+    if (generated.errors.length) {
+      throw new Error(`Planner could not generate a valid AgentFleetPlan: ${generated.errors.join("; ")}`);
+    }
+    const refreshed = this.requireOrchestration(orchestrationId);
+    const parsed = parseJson(refreshed.finalPlanJson) as AgentFleetPlan | null;
+    if (!parsed?.agents?.length) {
+      throw new Error("Planner generated a fleet plan, but no valid plan was stored.");
+    }
+    const plan = workflow ? withWorkflowSharedContext(parsed, workflow.graph) : parsed;
     this.deps.orchestrations.updateFinalPlan(orchestrationId, stableJson(plan));
     return plan;
+  }
+
+  private async runPlannerTurn(orchestrationId: number, userMessage: string): Promise<Orchestration> {
+    const orchestration = this.requireOrchestration(orchestrationId);
+    const workflowState = this.getOrCreateWorkflowForOrchestration(orchestration);
+    if (workflowState.created) {
+      this.deps.workflowEvents.graphCreated(workflowState.workflow);
+    }
+    const message = await this.deps.planner.continuePlanner(orchestrationId, userMessage, {
+      extraInstructions: workflowPlannerPromptContract(workflowState.workflow),
+      metadata: { kind: "planner_turn", workflow: workflowMessageMetadata(workflowState.workflow), plannerPrompt: workflowPlannerPromptContract(workflowState.workflow) },
+    });
+    this.recordPlannerWorkflowPatch(orchestration, message, workflowState.workflow);
+    const updated = this.requireOrchestration(orchestrationId);
+    this.refreshParentOrchestrationCard(updated, message, "planning");
+    return updated;
   }
 
   private getOrCreateWorkflowForOrchestration(orchestration: Orchestration): { workflow: PersistedWorkflowGraph; created: boolean } {
     const before = this.deps.workflows.getCurrentGraphForOrchestration(orchestration.id);
     const workflow = this.deps.workflows.getOrCreateForOrchestration(orchestration.projectId, orchestration.id, orchestration.goal);
     return { workflow, created: !before };
+  }
+
+  private recordPlannerWorkflowPatch(orchestration: Orchestration, plannerContent: string, workflow: PersistedWorkflowGraph): void {
+    const result = this.processPlannerWorkflowPatch(orchestration, plannerContent, workflow);
+    if (result.metadata.status === "none") {
+      return;
+    }
+    this.deps.orchestrationMessages.create(orchestration.id, "system", workflowPatchStatusMessage(result.metadata), {
+      metadata: {
+        kind: "workflow_patch",
+        workflowPatch: result.metadata,
+        workflow: workflowMessageMetadata(result.workflow ?? workflow),
+      },
+    });
   }
 
   private processPlannerWorkflowPatch(
@@ -1259,6 +1303,7 @@ function workflowMessageMetadata(workflow: PersistedWorkflowGraph): JsonRecord {
 
 function workflowPlannerPromptContract(workflow: PersistedWorkflowGraph): string {
   return [
+    "Use the arc-workflow-architect skill concepts when maintaining the live workflow.",
     "Maintain an evolving semantic WorkflowGraph for this orchestration.",
     "Respond with concise user-facing planner text.",
     "When requirements, architecture, risks, questions, tests, deployment, or agent plan semantics change, include exactly one fenced ARC_WORKFLOW_PATCH_JSON block.",
@@ -1266,6 +1311,26 @@ function workflowPlannerPromptContract(workflow: PersistedWorkflowGraph): string
     "WorkflowPatch operations must be semantic only. Do not include Excalidraw elements, appState, files, coordinates, or canvas shape JSON.",
     "If user input is ambiguous and the graph should not change yet, ask a question and emit no patch.",
   ].join("\n");
+}
+
+function workflowFleetPlanPromptContract(workflow: PersistedWorkflowGraph): string {
+  return [
+    "Use the current WorkflowGraph as source-of-truth planning context.",
+    "Include a concise WorkflowGraph summary in AgentFleetPlan.sharedContext.",
+    `Current graph id: ${workflow.graph.id}; current revision: ${workflow.revision}.`,
+    workflowSummary(workflow.graph),
+    "Child implementation agents may read this workflow context but must not directly mutate WorkflowGraph in v1.",
+  ].join("\n");
+}
+
+function workflowPatchStatusMessage(metadata: JsonRecord): string {
+  if (metadata.status === "applied") {
+    return `Workflow patch applied: ${String(metadata.reason ?? metadata.patchId ?? "planner update")}`;
+  }
+  if (metadata.status === "rejected") {
+    return `Workflow patch rejected: ${String(metadata.error ?? metadata.reason ?? "invalid planner patch")}`;
+  }
+  return "Workflow patch not applied.";
 }
 
 function appendWorkflowPatchBlock(message: string, patch: WorkflowPatch | null): string {

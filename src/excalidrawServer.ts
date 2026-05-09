@@ -10,6 +10,7 @@ import { GitHubPRFeedbackService } from "./github/GitHubPRFeedbackService.js";
 import { GitHubPRService } from "./github/GitHubPRService.js";
 import { PullRequestFeedbackRepo } from "./github/PullRequestFeedbackRepo.js";
 import { PullRequestFeedbackWorker } from "./github/PullRequestFeedbackWorker.js";
+import { OrchestrationPlannerService } from "./orchestrations/OrchestrationPlannerService.js";
 import { OrchestrationAgentsRepo } from "./orchestrations/repos/OrchestrationAgentsRepo.js";
 import { OrchestrationMessagesRepo } from "./orchestrations/repos/OrchestrationMessagesRepo.js";
 import { OrchestrationsRepo } from "./orchestrations/repos/OrchestrationsRepo.js";
@@ -45,6 +46,7 @@ const githubPrFeedback = new GitHubPRFeedbackService();
 const pump = new TaskMessagePump(client, projects, tasks, git, runner, router, progress, githubPr);
 const taskService = new TaskService(projects, tasks, git);
 const implementService = new ImplementService(projects, tasks, git, taskService, pump);
+const planner = new OrchestrationPlannerService(orchestrations, orchestrationMessages, projects, git, runner);
 const pullRequestFeedbackWorker = new PullRequestFeedbackWorker(
   { enabled: config.githubPrFeedbackEnabled, pollMs: config.githubPrFeedbackPollMs },
   client,
@@ -66,6 +68,7 @@ const server = new ExcalidrawApiServer({
   orchestrations,
   orchestrationAgents,
   orchestrationMessages,
+  planner,
   workflows: workflowService,
   workflowEvents,
 });

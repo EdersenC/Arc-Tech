@@ -252,6 +252,7 @@ try {
       orchestrations,
       orchestrationAgents,
       orchestrationMessages,
+      planner: validationPlanner(orchestrationMessages),
       workflows: service,
       workflowEvents: events,
     });
@@ -379,6 +380,99 @@ function validationConfig(tmp: string, port: number): AppConfig {
     excalidrawProjectChannelId: "channel-1",
     excalidrawProjectName: "Workflow Validation",
   };
+}
+
+function validationPlanner(messages: OrchestrationMessagesRepo): {
+  startPlanner: (orchestrationId: number, options?: { extraInstructions?: string; metadata?: unknown }) => Promise<string>;
+  continuePlanner: (orchestrationId: number, userMessage?: string, options?: { extraInstructions?: string; metadata?: unknown }) => Promise<string>;
+  generateFleetPlan: (orchestrationId: number, options?: { extraInstructions?: string; metadata?: unknown }) => Promise<{ raw: string; validJson?: string; errors: string[] }>;
+} {
+  return {
+    async startPlanner(orchestrationId, options) {
+      const content = "I will maintain the live WorkflowGraph and ask before changing ambiguous architecture.";
+      messages.create(orchestrationId, "planner", content, { metadata: options?.metadata });
+      return content;
+    },
+    async continuePlanner(orchestrationId, userMessage, options) {
+      const graphId =
+        /Current graph id: ([a-z0-9_.:-]+)/.exec(options?.extraInstructions ?? "")?.[1] ??
+        /Patch graphId must be ([a-z0-9_.:-]+)/.exec(options?.extraInstructions ?? "")?.[1] ??
+        "workflow-project-1-orchestration-1";
+      const revision = Number(
+        /current revision: (\d+)/i.exec(options?.extraInstructions ?? "")?.[1] ??
+          /baseRevision must be (\d+)/i.exec(options?.extraInstructions ?? "")?.[1] ??
+          0,
+      );
+      const lower = userMessage?.toLowerCase() ?? "";
+      const patch = lower.includes("https")
+        ? {
+            id: `patch-validation-https-rev-${revision}`,
+            graphId,
+            baseRevision: revision,
+            reason: "Replace P2P multiplayer with HTTPS.",
+            author: "planner",
+            createdAt: "2026-05-09T12:50:00.000Z",
+            operations: [
+              {
+                op: "mark_deprecated",
+                targetType: "node",
+                targetId: `component-peer-discovery-orchestration-${orchestrationId}`,
+                reason: "User replaced P2P multiplayer with HTTPS.",
+                replacementId: `component-https-api-server-orchestration-${orchestrationId}`,
+              },
+              {
+                op: "add_node",
+                node: {
+                  id: `component-https-api-server-orchestration-${orchestrationId}`,
+                  kind: "backend_component",
+                  status: "active",
+                  title: "HTTPS API server",
+                  createdAt: "2026-05-09T12:50:00.000Z",
+                  updatedAt: "2026-05-09T12:50:00.000Z",
+                },
+              },
+            ],
+          }
+        : null;
+      const content = patch
+        ? `HTTPS replaces the P2P assumption.\n\n\`\`\`ARC_WORKFLOW_PATCH_JSON\n${JSON.stringify(patch, null, 2)}\n\`\`\``
+        : "I need one more requirement before changing the workflow.";
+      messages.create(orchestrationId, "planner", content, { metadata: options?.metadata });
+      return content;
+    },
+    async generateFleetPlan(orchestrationId, options) {
+      const plan = {
+        orchestrationGoal: "Validate workflow planner flow",
+        architectureSummary: "Use workflow-aware planner output.",
+        agentCount: 2,
+        sharedContext: options?.extraInstructions ?? "Workflow context unavailable.",
+        integrationStrategy: "Use separate implementation and validation agents.",
+        agents: [
+          {
+            name: "Implementation",
+            role: "implementer",
+            objective: "Implement the planned workflow slice.",
+            prompt: "Read workflow context and implement only the assigned slice.",
+            acceptanceCriteria: ["Implementation matches current workflow context."],
+          },
+          {
+            name: "Validation",
+            role: "tester",
+            objective: "Validate the planned workflow slice.",
+            prompt: "Run available checks and report results.",
+            acceptanceCriteria: ["Relevant validation commands are reported."],
+          },
+        ],
+      };
+      const raw = JSON.stringify(plan, null, 2);
+      messages.create(orchestrationId, "planner", raw, { metadata: { fleetPlan: true, ...(metadataRecord(options?.metadata)) } });
+      return { raw, validJson: raw, errors: [] };
+    },
+  };
+}
+
+function metadataRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {

@@ -746,7 +746,7 @@ function OrchestrationSidebar(props: {
   const { detail } = props;
   const orchestration = detail.orchestration;
   const question = orchestration.latestQuestion;
-  const canSpawn = ["ready_for_approval", "READY_TO_ORCHESTRATE"].includes(orchestration.status);
+  const canSpawn = ["ready_for_approval", "READY_TO_ORCHESTRATE", "WAITING_USER"].includes(orchestration.status);
   const canAnswerQuestion = ["waiting_for_user_choice", "asking_questions", "refining_plan", "draft_created"].includes(orchestration.status);
   const workflowPatch = orchestration.latestWorkflowPatch;
   return (
