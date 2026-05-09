@@ -379,7 +379,11 @@ export async function sendOrchestrationMessage(orchestrationId: number, content:
   return parseJsonResponse(response);
 }
 
-export async function launchOrchestration(orchestrationId: number, x: number, y: number): Promise<{ orchestration: ArcOrchestrationView; cards: ArcCard[] }> {
+export async function launchOrchestration(
+  orchestrationId: number,
+  x: number,
+  y: number,
+): Promise<{ orchestration: ArcOrchestrationView; cards: ArcCard[]; requiresApproval?: boolean }> {
   const response = await fetch(`/api/orchestrations/${encodeURIComponent(String(orchestrationId))}/launch`, {
     method: "POST",
     headers: { "content-type": "application/json" },

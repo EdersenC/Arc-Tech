@@ -1,5 +1,61 @@
 # Examples
 
+These examples are patterns, not a special snake-game-only contract. Reuse the same structure for any Arc-Tech workflow:
+
+- Start with a `goal` node and a small set of requirements.
+- Add architecture `decision` nodes for assumptions that may change.
+- Add component nodes for frontend, backend, data, external services, deployment, and validation concerns.
+- Connect components with semantic edges such as `implements`, `depends_on`, `contains`, `replaces`, or `blocks`.
+- When the user changes direction, preserve unrelated graph sections and deprecate or replace only the affected nodes.
+- When a requirement change has downstream effects, update tests, risks, deployment, open questions, and agent-task nodes in the same patch when enough information is available.
+- If the user is ambiguous, ask a clarifying question and emit no patch.
+
+Generic node ID pattern:
+
+```text
+goal-orchestration-<id>
+req-<short-requirement>-orchestration-<id>
+decision-<short-decision>-orchestration-<id>
+component-<short-component>-orchestration-<id>
+agent-task-<short-slice>-orchestration-<id>
+risk-<short-risk>-orchestration-<id>
+question-<short-question>-orchestration-<id>
+```
+
+Generic change pattern:
+
+```ARC_WORKFLOW_PATCH_JSON
+{
+  "id": "patch-change-architecture-rev-3",
+  "graphId": "workflow-project-1-orchestration-12",
+  "baseRevision": 3,
+  "reason": "Replace an earlier architecture decision with the user's new requirement.",
+  "author": "planner",
+  "createdAt": "2026-05-09T12:00:00.000Z",
+  "operations": [
+    {
+      "op": "mark_deprecated",
+      "targetType": "node",
+      "targetId": "decision-old-architecture-orchestration-12",
+      "reason": "The user selected a different architecture.",
+      "replacementId": "decision-new-architecture-orchestration-12"
+    },
+    {
+      "op": "add_node",
+      "node": {
+        "id": "decision-new-architecture-orchestration-12",
+        "kind": "decision",
+        "status": "active",
+        "title": "New architecture decision",
+        "summary": "Concise statement of the new decision.",
+        "createdAt": "2026-05-09T12:00:00.000Z",
+        "updatedAt": "2026-05-09T12:00:00.000Z"
+      }
+    }
+  ]
+}
+```
+
 ## Initial Graph: Ace Multiplayer Snake Game
 
 ```json

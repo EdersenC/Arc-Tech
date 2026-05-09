@@ -24,8 +24,7 @@ import {
   type ArcTaskDetail,
 } from "./api";
 import { graphToExcalidrawElements } from "./workflows/workflowElements";
-import { workflowNodeElementId } from "./workflows/workflowIds";
-import { useWorkflowStream } from "./workflows/useWorkflowStream";
+import { useWorkflowStream, type WorkflowStreamStatus } from "./workflows/useWorkflowStream";
 import type { ArcPersistedWorkflowGraph, ArcWorkflowNode } from "./workflows/api";
 
 const ACTIVE_PROJECT_KEY = "arc-tech.excalidraw.activeProjectId";
@@ -289,23 +288,14 @@ export default function App() {
   }, [applyWorkflowToScene, workflowStream.graph]);
 
   useEffect(() => {
-    const parts = [
-      workflowStream.status === "connected"
-        ? "Workflow connected"
-        : workflowStream.status === "connecting"
-          ? "Workflow connecting"
-          : workflowStream.status === "reconnecting"
-            ? "Workflow reconnecting"
-            : "Workflow disconnected",
-      workflowStream.revision !== null ? `rev ${workflowStream.revision}` : "no graph",
-      workflowStream.latestPatchReason ? `latest: ${workflowStream.latestPatchReason}` : null,
-    ].filter(Boolean);
-    if (parts.length) {
-      setStatus((current) => (current.startsWith("Moved ") ? current : parts.join(" · ")));
-    }
-    if (workflowStream.error) {
-      setError(workflowStream.error);
-    }
+    const nextStatus = workflowStatusText(
+      workflowStream.status,
+      workflowStream.revision,
+      workflowStream.latestPatchReason,
+      "Workflow idle",
+      workflowStream.error,
+    );
+    setStatus((current) => (current.startsWith("Moved ") ? current : nextStatus));
   }, [workflowStream.status, workflowStream.revision, workflowStream.latestPatchReason, workflowStream.error]);
 
   useEffect(() => {
@@ -506,7 +496,8 @@ export default function App() {
 
   async function handleLaunchSelectedOrchestration() {
     if (!orchestrationDetail) return;
-    if (!project?.prReady) {
+    const readyToSpawn = orchestrationReadyForSpawn(orchestrationDetail.orchestration.status);
+    if (readyToSpawn && !project?.prReady) {
       setError(projectBlockerText(project));
       return;
     }
@@ -515,9 +506,15 @@ export default function App() {
     try {
       const position = cardPositionInViewport(excalidrawApiRef.current, canvasFrameRef.current, spawnViewportRef);
       const response = await launchOrchestration(orchestrationDetail.orchestration.id, position.x, position.y);
-      applyCardsToScene([...response.cards, ...cardsRef.current.filter((card) => !response.cards.some((next) => next.id === card.id))]);
+      if (response.cards.length) {
+        applyCardsToScene([...response.cards, ...cardsRef.current.filter((card) => !response.cards.some((next) => next.id === card.id))]);
+      }
       setOrchestrationDetail(response.orchestration);
-      setStatus(`Spawned ${response.orchestration.agents.length} agents for orchestration #${response.orchestration.orchestration.id}`);
+      setStatus(
+        response.requiresApproval
+          ? `Plan ready for review for orchestration #${response.orchestration.orchestration.id}`
+          : `Spawned ${response.orchestration.agents.length} agents for orchestration #${response.orchestration.orchestration.id}`,
+      );
       await refresh(response.orchestration.orchestration.projectId);
     } catch (launchError) {
       setError(launchError instanceof Error ? launchError.message : String(launchError));
@@ -545,7 +542,7 @@ export default function App() {
       }
     }
     const workflow = workflowGraphRef.current;
-    if (workflow && workflowLayerNeedsRestore(elements, workflow)) {
+    if (workflow && workflowLayerNeedsRestore(elements, workflow, cardsRef.current)) {
       applyWorkflowToScene(workflow);
     }
     const updates = changedCardPositions(elements, cardsRef.current);
@@ -662,7 +659,14 @@ export default function App() {
             Refresh
           </button>
           <div className="status-strip" aria-live="polite">
-            {error ?? workflowStatusText(workflowStream.status, workflowStream.revision, workflowStream.latestPatchReason, status)}
+            {error ??
+              workflowStatusText(
+                workflowStream.status,
+                workflowStream.revision,
+                workflowStream.latestPatchReason,
+                status,
+                workflowStream.error,
+              )}
           </div>
         </form>
         <form className="repo-panel" onSubmit={handleConnectRemote}>
@@ -699,6 +703,7 @@ export default function App() {
             node={selectedWorkflowNode}
             workflow={workflowGraphRef.current}
             streamStatus={workflowStream.status}
+            streamError={workflowStream.error}
             latestPatchReason={workflowStream.latestPatchReason}
             onClose={closeSidebar}
           />
@@ -753,7 +758,8 @@ function OrchestrationSidebar(props: {
   const { detail } = props;
   const orchestration = detail.orchestration;
   const question = orchestration.latestQuestion;
-  const canSpawn = ["ready_for_approval", "READY_TO_ORCHESTRATE", "WAITING_USER"].includes(orchestration.status);
+  const canSpawn = orchestrationReadyForSpawn(orchestration.status);
+  const canPreparePlan = orchestrationCanPreparePlan(orchestration.status);
   const canAnswerQuestion = ["waiting_for_user_choice", "asking_questions", "refining_plan", "draft_created"].includes(orchestration.status);
   const workflowPatch = orchestration.latestWorkflowPatch;
   return (
@@ -805,8 +811,8 @@ function OrchestrationSidebar(props: {
         />
       ) : null}
       <div className="sidebar-section action-row">
-        <button type="button" onClick={props.onLaunch} disabled={!canSpawn || props.chatBusy}>
-          Spawn Agents
+        <button type="button" onClick={props.onLaunch} disabled={(!canSpawn && !canPreparePlan) || props.chatBusy}>
+          {canSpawn ? "Spawn Agents" : "Prepare Plan"}
         </button>
         <button
           type="button"
@@ -1034,7 +1040,8 @@ function TaskSidebar(props: {
 function WorkflowSidebar(props: {
   node: ArcWorkflowNode;
   workflow: ArcPersistedWorkflowGraph | null;
-  streamStatus: string;
+  streamStatus: WorkflowStreamStatus;
+  streamError: string | null;
   latestPatchReason: string | null;
   onClose: () => void;
 }) {
@@ -1075,7 +1082,7 @@ function WorkflowSidebar(props: {
       ) : null}
       <div className="sidebar-section">
         <h3>Workflow Status</h3>
-        <p>{workflowStatusText(props.streamStatus, props.workflow?.revision ?? null, props.latestPatchReason, "Workflow idle")}</p>
+        <p>{workflowStatusText(props.streamStatus, props.workflow?.revision ?? null, props.latestPatchReason, "Workflow idle", props.streamError)}</p>
         <p className="muted-copy">Workflow nodes are read-only on the canvas in v1.</p>
       </div>
     </aside>
@@ -1245,9 +1252,21 @@ function isArcManagedElement(element: ArcElement): boolean {
   return isArcCardElement(element) || isWorkflowElement(element);
 }
 
-function workflowLayerNeedsRestore(elements: readonly ArcElement[], workflow: ArcPersistedWorkflowGraph): boolean {
-  const elementIds = new Set(elements.filter(isWorkflowElement).map((element) => element.id));
-  return workflow.graph.nodes.some((node) => !elementIds.has(workflowNodeElementId(workflow.graph.id, node.id)));
+function workflowLayerNeedsRestore(elements: readonly ArcElement[], workflow: ArcPersistedWorkflowGraph, cards: ArcCard[]): boolean {
+  const expectedIds = new Set(
+    graphToExcalidrawElements(workflow.graph, {
+      persisted: workflow,
+      avoidRects: cards.map((card) => ({ x: card.x, y: card.y, width: card.width, height: card.height })),
+    }).map((element) => element.id),
+  );
+  const actualIds = new Set(elements.filter(isWorkflowElement).map((element) => element.id));
+  if (actualIds.size !== expectedIds.size) {
+    return true;
+  }
+  for (const expectedId of expectedIds) {
+    if (!actualIds.has(expectedId)) return true;
+  }
+  return false;
 }
 
 function samePosition(left: ArcCard, right: ArcCard): boolean {
@@ -1447,17 +1466,44 @@ function projectStatusLine(project: ArcProject): string {
   return `${remote} · ${pr} · ${ready} · ${project.taskCount} task${project.taskCount === 1 ? "" : "s"}`;
 }
 
-function workflowStatusText(streamStatus: string, revision: number | null, latestPatchReason: string | null, fallback: string): string {
-  const connected =
-    streamStatus === "connected"
-      ? "Workflow connected"
-      : streamStatus === "connecting"
-        ? "Workflow connecting"
-        : streamStatus === "error"
-          ? "Workflow reconnecting"
-          : "Workflow disconnected";
+function workflowStatusText(
+  streamStatus: WorkflowStreamStatus,
+  revision: number | null,
+  latestPatchReason: string | null,
+  fallback: string,
+  streamError?: string | null,
+): string {
+  let connected: string;
+  switch (streamStatus) {
+    case "idle":
+      connected = "Workflow idle";
+      break;
+    case "connecting":
+      connected = "Workflow connecting";
+      break;
+    case "connected":
+      connected = "Workflow connected";
+      break;
+    case "reconnecting":
+      connected = streamError ? `Workflow reconnecting: ${streamError}` : "Workflow reconnecting";
+      break;
+    case "disconnected":
+      connected = streamError ? `Workflow disconnected: ${streamError}` : "Workflow disconnected";
+      break;
+    case "error":
+      connected = streamError ? `Workflow stream error: ${streamError}` : "Workflow stream error";
+      break;
+  }
   const parts = [connected, revision !== null ? `rev ${revision}` : "no graph", latestPatchReason ? `latest: ${latestPatchReason}` : fallback].filter(Boolean);
   return parts.join(" · ");
+}
+
+function orchestrationReadyForSpawn(status: string): boolean {
+  return ["ready_for_approval", "READY_TO_ORCHESTRATE", "approved_for_spawn"].includes(status);
+}
+
+function orchestrationCanPreparePlan(status: string): boolean {
+  return ["WAITING_USER", "waiting_for_user_choice", "asking_questions", "refining_plan", "draft_created"].includes(status);
 }
 
 function workflowPatchLine(patch: { status?: string; reason?: string; resultingRevision?: number; error?: string }): string {

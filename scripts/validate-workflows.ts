@@ -264,7 +264,7 @@ try {
       orchestrations,
       orchestrationAgents,
       orchestrationMessages,
-      planner: validationPlanner(orchestrationMessages),
+      planner: validationPlanner(orchestrationMessages, orchestrations),
       workflows: service,
       workflowEvents: events,
     });
@@ -355,6 +355,28 @@ try {
         planned.orchestration.workflow?.graph.nodes.find((node) => node.id.includes("component-peer-discovery"))?.status,
         "deprecated",
       );
+
+      const prepared = await fetchJson<{
+        requiresApproval?: boolean;
+        cards: unknown[];
+        orchestration: {
+          orchestration: {
+            status: string;
+            finalPlan: { agents?: unknown[]; sharedContext?: string } | null;
+            workflow: { revision: number; graph: WorkflowGraph } | null;
+          };
+        };
+      }>(`${baseUrl}/api/orchestrations/${orchestrated.orchestration.orchestration.id}/launch`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ x: 160, y: 220 }),
+      });
+      assert.equal(prepared.requiresApproval, true);
+      assert.equal(prepared.cards.length, 0, "first launch call should prepare the plan without spawning child cards");
+      assert.equal(prepared.orchestration.orchestration.status, "ready_for_approval");
+      assert.ok(prepared.orchestration.orchestration.finalPlan?.agents?.length);
+      assert.match(prepared.orchestration.orchestration.finalPlan?.sharedContext ?? "", /Current WorkflowGraph:/);
+      assert.equal(prepared.orchestration.orchestration.workflow?.revision, 1);
     } finally {
       await server.close().catch(() => undefined);
     }
@@ -394,7 +416,7 @@ function validationConfig(tmp: string, port: number): AppConfig {
   };
 }
 
-function validationPlanner(messages: OrchestrationMessagesRepo): {
+function validationPlanner(messages: OrchestrationMessagesRepo, orchestrations: OrchestrationsRepo): {
   startPlanner: (orchestrationId: number, options?: { extraInstructions?: string; metadata?: unknown }) => Promise<string>;
   continuePlanner: (orchestrationId: number, userMessage?: string, options?: { extraInstructions?: string; metadata?: unknown }) => Promise<string>;
   generateFleetPlan: (orchestrationId: number, options?: { extraInstructions?: string; metadata?: unknown }) => Promise<{ raw: string; validJson?: string; errors: string[] }>;
@@ -477,6 +499,7 @@ function validationPlanner(messages: OrchestrationMessagesRepo): {
         ],
       };
       const raw = JSON.stringify(plan, null, 2);
+      orchestrations.updateFinalPlan(orchestrationId, raw);
       messages.create(orchestrationId, "planner", raw, { metadata: { fleetPlan: true, ...(metadataRecord(options?.metadata)) } });
       return { raw, validJson: raw, errors: [] };
     },

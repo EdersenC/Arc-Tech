@@ -371,6 +371,18 @@ export class ExcalidrawApiServer {
   private async handleLaunchOrchestration(orchestrationId: number, req: IncomingMessage, res: ServerResponse): Promise<void> {
     const orchestration = this.requireOrchestration(orchestrationId);
     const project = await this.getSyncedExcalidrawProject(requireValue(this.deps.projects.getById(orchestration.projectId), "Project not found."));
+    const body = await readJson(req);
+    if (!isOrchestrationReadyForSpawn(orchestration)) {
+      const plan = await this.ensureFleetPlan(orchestrationId, project);
+      const ready = this.deps.orchestrations.updateStatus(orchestrationId, "ready_for_approval");
+      this.deps.orchestrationMessages.create(orchestrationId, "system", "AgentFleetPlan is ready for review. Press Spawn Agents again to approve and launch child agents.", {
+        metadata: { kind: "ready_for_approval", readySummary: plan.architectureSummary, plan },
+      });
+      this.refreshParentOrchestrationCard(ready, readyMessage(plan), "ready");
+      this.sendJson(res, 202, { orchestration: this.orchestrationView(ready), cards: [], requiresApproval: true });
+      return;
+    }
+
     const projectView = this.projectView(project);
     if (!projectView.prReady) {
       this.sendJson(res, 409, {
@@ -380,7 +392,6 @@ export class ExcalidrawApiServer {
       });
       return;
     }
-    const body = await readJson(req);
     const plan = await this.ensureFleetPlan(orchestrationId, project);
     const current = this.requireOrchestration(orchestrationId);
     this.deps.orchestrations.updateStatus(orchestrationId, "spawning_agents");
@@ -1892,6 +1903,10 @@ function writeWorkflowSse(res: ServerResponse, event: WorkflowEvent): void {
 
 function isStaleWorkflowError(message: string): boolean {
   return /stale|baseRevision|revision .*does not match/i.test(message);
+}
+
+function isOrchestrationReadyForSpawn(orchestration: Pick<Orchestration, "status">): boolean {
+  return ["ready_for_approval", "READY_TO_ORCHESTRATE", "approved_for_spawn"].includes(orchestration.status);
 }
 
 function arrayOfStrings(value: unknown): string[] {
