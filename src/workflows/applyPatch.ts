@@ -63,7 +63,7 @@ export function applyWorkflowPatch(graph: WorkflowGraph | null, rawPatch: Workfl
   }
   if (patch.baseRevision !== graph.revision) {
     throw new WorkflowPatchError("stale_patch", "Workflow patch baseRevision is stale", [
-      `patch baseRevision ${patch.baseRevision ?? "missing"} does not match graph revision ${graph.revision}.`,
+      `patch ${patch.id} targets baseRevision ${patch.baseRevision ?? "missing"}, but graph ${graph.id} is currently at revision ${graph.revision}. Fetch the latest workflow snapshot and regenerate the patch against that revision.`,
     ]);
   }
 

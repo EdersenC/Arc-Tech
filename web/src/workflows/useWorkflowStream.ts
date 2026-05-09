@@ -6,7 +6,7 @@ import {
   type ArcWorkflowEvent,
 } from "./api";
 
-export type WorkflowStreamStatus = "idle" | "connecting" | "connected" | "disconnected" | "error";
+export type WorkflowStreamStatus = "idle" | "connecting" | "connected" | "reconnecting" | "disconnected" | "error";
 
 export interface WorkflowStreamState {
   graph: ArcPersistedWorkflowGraph | null;
@@ -66,12 +66,18 @@ export function useWorkflowStream(projectId: number | null): WorkflowStreamState
           latestEvent: event,
         };
       });
+    }, (error) => {
+      setState((current) => ({ ...current, status: "error", error }));
     });
     source.onopen = () => {
       setState((current) => ({ ...current, status: "connected", error: null }));
     };
     source.onerror = () => {
-      setState((current) => ({ ...current, status: source?.readyState === EventSource.CLOSED ? "disconnected" : "error" }));
+      setState((current) => ({
+        ...current,
+        status: source?.readyState === EventSource.CLOSED ? "disconnected" : "reconnecting",
+        error: source?.readyState === EventSource.CLOSED ? "Workflow stream disconnected." : "Workflow stream reconnecting.",
+      }));
     };
 
     return () => {

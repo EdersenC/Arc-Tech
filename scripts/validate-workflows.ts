@@ -20,6 +20,7 @@ import {
   type WorkflowGraph,
   type WorkflowPatch,
 } from "../src/workflows/index.js";
+import { workflowNodeElementId } from "../web/src/workflows/workflowIds.ts";
 
 const t0 = "2026-05-09T12:00:00.000Z";
 const createPatch: WorkflowPatch = {
@@ -137,9 +138,20 @@ assert.equal(
   "rejected",
   "malformed planner patch blocks should be rejected without throwing",
 );
+assert.equal(workflowNodeElementId("workflow-live-canvas-v1", "goal-live-canvas"), "arc-workflow-workflow-live-canvas-v1-node-goal-live-canvas");
+const latestPatchParse = parsePlannerWorkflowPatch(`First block
+\`\`\`ARC_WORKFLOW_PATCH_JSON
+${JSON.stringify({ ...replaceP2pPatch, id: "patch-old-block" })}
+\`\`\`
+Second block
+\`\`\`ARC_WORKFLOW_PATCH_JSON
+${JSON.stringify({ ...replaceP2pPatch, id: "patch-newest-block" })}
+\`\`\``);
+assert.equal(latestPatchParse.status, "valid");
+assert.equal(latestPatchParse.status === "valid" ? latestPatchParse.patch.id : null, "patch-newest-block");
 
 const stalePatch: WorkflowPatch = { ...replaceP2pPatch, id: "patch-stale", baseRevision: 1 };
-assert.throws(() => applyWorkflowPatch(updated as WorkflowGraph, stalePatch), /baseRevision 1 does not match graph revision 2/);
+assert.throws(() => applyWorkflowPatch(updated as WorkflowGraph, stalePatch), /currently at revision 2/);
 
 async function runPersistenceAndApiValidation(): Promise<void> {
 const tmp = mkdtempSync(path.join(tmpdir(), "arc-workflow-validation-"));

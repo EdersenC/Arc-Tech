@@ -24,10 +24,11 @@ export function parsePlannerWorkflowPatch(content: string): PlannerWorkflowPatch
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
+    const preview = raw.replace(/\s+/g, " ").slice(0, 180);
     return {
       status: "rejected",
       raw,
-      error: `Workflow patch JSON is malformed: ${error instanceof Error ? error.message : String(error)}`,
+      error: `Workflow patch JSON is malformed inside the newest ${WORKFLOW_PATCH_BLOCK} block: ${error instanceof Error ? error.message : String(error)}. Check the fenced block contains one complete JSON object. Preview: ${preview}`,
     };
   }
 

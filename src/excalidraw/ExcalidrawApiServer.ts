@@ -525,6 +525,14 @@ export class ExcalidrawApiServer {
       const persistedPatch = history[history.length - 1] ?? null;
       if (persistedPatch) {
         this.deps.workflowEvents.patchApplied(updated, persistedPatch);
+        console.log("Workflow patch applied.", {
+          graphId: updated.id,
+          workflowGraphId: updated.graph.id,
+          orchestrationId,
+          patchId: persistedPatch.patch.id,
+          resultingRevision: updated.revision,
+          reason: persistedPatch.reason,
+        });
       }
       this.sendJson(res, 202, { workflow: workflowView(updated), patch: persistedPatch ? workflowPatchView(persistedPatch) : null });
     } catch (error) {
@@ -534,6 +542,14 @@ export class ExcalidrawApiServer {
         orchestrationId,
         graphId: workflow.id,
         patch,
+        error: message,
+      });
+      console.warn("Workflow patch rejected.", {
+        graphId: workflow.id,
+        workflowGraphId: workflow.graph.id,
+        orchestrationId,
+        patchId: patch.id,
+        baseRevision: patch.baseRevision,
         error: message,
       });
       this.sendJson(res, isStaleWorkflowError(message) ? 409 : 400, { error: message });
@@ -1069,6 +1085,12 @@ export class ExcalidrawApiServer {
         graphId: fallbackWorkflow.id,
         error: parsed.error,
       });
+      console.warn("Planner workflow patch rejected before apply.", {
+        graphId: fallbackWorkflow.id,
+        workflowGraphId: fallbackWorkflow.graph.id,
+        orchestrationId: orchestration.id,
+        error: parsed.error,
+      });
       return { metadata: { status: "rejected", error: parsed.error }, workflow: null };
     }
 
@@ -1078,6 +1100,14 @@ export class ExcalidrawApiServer {
       const persistedPatch = history[history.length - 1] ?? null;
       if (persistedPatch) {
         this.deps.workflowEvents.patchApplied(updated, persistedPatch);
+        console.log("Planner workflow patch applied.", {
+          graphId: updated.id,
+          workflowGraphId: updated.graph.id,
+          orchestrationId: orchestration.id,
+          patchId: persistedPatch.patch.id,
+          resultingRevision: updated.revision,
+          reason: persistedPatch.reason,
+        });
       }
       return {
         metadata: {
@@ -1096,6 +1126,14 @@ export class ExcalidrawApiServer {
         orchestrationId: orchestration.id,
         graphId: fallbackWorkflow.id,
         patch: parsed.patch,
+        error: message,
+      });
+      console.warn("Planner workflow patch rejected.", {
+        graphId: fallbackWorkflow.id,
+        workflowGraphId: fallbackWorkflow.graph.id,
+        orchestrationId: orchestration.id,
+        patchId: parsed.patch.id,
+        baseRevision: parsed.patch.baseRevision,
         error: message,
       });
       return {

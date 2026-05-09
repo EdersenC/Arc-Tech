@@ -164,11 +164,67 @@ Click a task card to open the right-side detail drawer. The drawer loads `GET /a
 
 Excalidraw `/orchestrate` starts a project-scoped visual planning session instead of immediately spawning agents. The parent orchestration card opens a sidebar with the planner transcript, clickable poll-style options, freeform planner replies, final plan review, and a **Spawn Agents** control. Spawning requires explicit approval. When approved, the API creates real child implementation tasks through `ImplementService`, lays their cards out inside one bordered orchestration group in a 3-column grid, and stores parent/child links through task orchestration ids and card metadata. Clicking the outer orchestration card reopens the master plan/history; clicking a child card opens that agent task's normal history and follow-up chat.
 
+### Live Workflow Canvas v1
+
+Live workflow canvas v1 adds a model-owned `WorkflowGraph` to Excalidraw `/orchestrate`. The graph is the source of truth for goals, requirements, architecture decisions, components, risks, questions, milestones, and proposed agent tasks. Excalidraw is only the visual projection.
+
+Run it from a fresh checkout:
+
+```bash
+npm install
+cp .env.example .env
+npm run excalidraw
+```
+
+Open the Vite URL printed by `npm run excalidraw`, create or select an Excalidraw project, connect a repo remote if Direct Agent or Spawn Agents needs PR-backed work, then submit:
+
+```text
+/orchestrate ace multiplayer snake game
+```
+
+The server creates the parent orchestration and an initial project-scoped workflow graph. The browser subscribes to:
+
+```text
+GET /api/workflows/events?projectId=<activeProjectId>
+```
+
+and renders locked workflow boxes/arrows into the same canvas as task cards. The sidebar shows workflow stream state, current revision, and latest patch reason/status.
+
+Planner/model messages may include semantic workflow patches in this fenced format:
+
+````markdown
+```ARC_WORKFLOW_PATCH_JSON
+{
+  "id": "patch-replace-p2p-with-https-rev-0",
+  "graphId": "workflow-project-1-orchestration-12",
+  "baseRevision": 0,
+  "reason": "Replace P2P multiplayer with HTTPS.",
+  "author": "planner",
+  "createdAt": "2026-05-09T12:05:00.000Z",
+  "operations": []
+}
+```
+````
+
+The server extracts the newest `ARC_WORKFLOW_PATCH_JSON` block, validates it, rejects raw Excalidraw JSON, checks `baseRevision`, applies it through `WorkflowService`, persists patch history, and emits `workflow.patch_applied` or `workflow.patch_rejected`.
+
+Important v1 rule: direct user canvas edits do not change workflow state. Moving or deleting workflow-owned Excalidraw elements is visual-only and is restored from the latest `WorkflowGraph` snapshot. User input changes the graph only by going through the planner/model. Task-card dragging still uses the existing card persistence path and does not mutate `WorkflowGraph`.
+
+Troubleshooting workflow streams:
+
+- Status shows `Workflow reconnecting`: the browser `EventSource` lost the SSE connection and is reconnecting automatically. Check that `npm run excalidraw` is still running and the active project id is valid.
+- Status shows `Workflow disconnected`: the EventSource closed. Reload the page or switch projects to create a new stream.
+- Patch rejected with a stale revision: the planner emitted a patch for an older `baseRevision`. Fetch the latest graph snapshot and regenerate the patch against the current revision.
+- Patch rejected as malformed: inspect the newest `ARC_WORKFLOW_PATCH_JSON` block; it must contain one complete JSON object and no markdown inside the block.
+- Canvas does not update: check the browser console for stream parse errors and the server log for `Workflow patch applied` or `Workflow patch rejected`.
+
+See `docs/demo-workflow-snake-game.md` for a manual end-to-end demo.
+
 The Excalidraw API intentionally does not log in to Discord and does not expose Discord tokens. Execution still flows through `ImplementService`, `TaskMessagePump`, `CodexRunner`, and `GitManager`; the canvas never runs shell commands directly.
 
 For compiled serving, `npm run build` writes the web bundle to `dist/web`; the Excalidraw API serves that directory when Vite is not in front of it.
 
-Current limitations: the Excalidraw planner loop uses structured stored planning state for the MVP; collaborative multi-user editing is not enabled, and task controls such as diff/merge/cancel remain in the existing Discord task UI for now.
+Current limitations: collaborative multi-user editing is not enabled, workflow event fanout is in-memory for v1, and task controls such as diff/merge/cancel remain in the existing Discord task UI for now.
 
 ## Project Git Remote
 
@@ -197,6 +253,8 @@ The bot keeps durable state in SQLite at `DATABASE_PATH`. The schema contains:
 - `orchestration_agents`: child agent rows linked to visible task threads, branches, worktrees, summaries, and optional PR URLs.
 - `orchestration_messages`: parent-thread planner conversation history.
 - `excalidraw_cards`: persisted visual cards, linked task ids, project ids, canvas position, label, branch, and status for the Excalidraw UI.
+- `workflow_graphs`: current authoritative `WorkflowGraph` snapshots scoped to a project and optional orchestration.
+- `workflow_patches`: append-only semantic `WorkflowPatch` history with base/resulting revisions and planner reasons.
 
 Project files live under `WORKSPACES_DIR/<guild>/<project-slug>-<channel-id>/` with a `repo/` base checkout and isolated task worktrees in `worktrees/task-<n>/`. Task branches use `codex/task-<n>`, where `<n>` is the project-local task number shown in Discord.
 

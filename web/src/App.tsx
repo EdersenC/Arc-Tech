@@ -23,7 +23,8 @@ import {
   type ArcProject,
   type ArcTaskDetail,
 } from "./api";
-import { graphToExcalidrawElements, workflowNodeElementId } from "./workflows/workflowElements";
+import { graphToExcalidrawElements } from "./workflows/workflowElements";
+import { workflowNodeElementId } from "./workflows/workflowIds";
 import { useWorkflowStream } from "./workflows/useWorkflowStream";
 import type { ArcPersistedWorkflowGraph, ArcWorkflowNode } from "./workflows/api";
 
@@ -289,7 +290,13 @@ export default function App() {
 
   useEffect(() => {
     const parts = [
-      workflowStream.status === "connected" ? "Workflow connected" : workflowStream.status === "connecting" ? "Workflow connecting" : "Workflow disconnected",
+      workflowStream.status === "connected"
+        ? "Workflow connected"
+        : workflowStream.status === "connecting"
+          ? "Workflow connecting"
+          : workflowStream.status === "reconnecting"
+            ? "Workflow reconnecting"
+            : "Workflow disconnected",
       workflowStream.revision !== null ? `rev ${workflowStream.revision}` : "no graph",
       workflowStream.latestPatchReason ? `latest: ${workflowStream.latestPatchReason}` : null,
     ].filter(Boolean);

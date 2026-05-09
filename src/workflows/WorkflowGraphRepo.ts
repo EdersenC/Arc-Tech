@@ -145,7 +145,9 @@ export class WorkflowGraphRepo {
         throw new Error(`Workflow graph ${graphId} not found.`);
       }
       if (existing.revision !== patch.baseRevision) {
-        throw new Error(`Workflow patch is stale: graph revision ${existing.revision} does not match baseRevision ${patch.baseRevision}.`);
+        throw new Error(
+          `Workflow patch ${patch.id} is stale: graph ${existing.graph.id} is currently at revision ${existing.revision}, but the patch targets baseRevision ${patch.baseRevision}. Fetch the latest workflow snapshot and retry with a regenerated patch.`,
+        );
       }
       if (patch.graphId && patch.graphId !== existing.graph.id) {
         throw new Error(`Workflow patch graphId ${patch.graphId} does not match workflow graph ${existing.graph.id}.`);
@@ -174,7 +176,7 @@ export class WorkflowGraphRepo {
           baseRevision: patch.baseRevision,
         });
       if (updateResult.changes !== 1) {
-        throw new Error(`Workflow patch is stale: graph ${graphId} was updated before the patch could be saved.`);
+        throw new Error(`Workflow patch ${patch.id} is stale: graph ${graphId} was updated before the patch could be saved. Fetch the latest workflow snapshot and retry.`);
       }
 
       const insertResult = this.db

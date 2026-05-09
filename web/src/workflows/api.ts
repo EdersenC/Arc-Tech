@@ -134,12 +134,16 @@ export async function applyWorkflowPatch(orchestrationId: number, patch: ArcWork
   return parseJsonResponse(response);
 }
 
-export function openWorkflowEventSource(projectId: number, onEvent: (event: ArcWorkflowEvent) => void): EventSource {
+export function openWorkflowEventSource(projectId: number, onEvent: (event: ArcWorkflowEvent) => void, onParseError?: (error: string) => void): EventSource {
   const source = new EventSource(`/api/workflows/events?projectId=${encodeURIComponent(String(projectId))}`);
   const eventTypes: ArcWorkflowEventType[] = ["workflow.snapshot", "workflow.patch_applied", "workflow.patch_rejected", "workflow.graph_created"];
   for (const type of eventTypes) {
     source.addEventListener(type, (event) => {
-      onEvent(JSON.parse((event as MessageEvent<string>).data) as ArcWorkflowEvent);
+      try {
+        onEvent(JSON.parse((event as MessageEvent<string>).data) as ArcWorkflowEvent);
+      } catch (error) {
+        onParseError?.(`Workflow stream event could not be parsed: ${error instanceof Error ? error.message : String(error)}`);
+      }
     });
   }
   return source;
