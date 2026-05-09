@@ -19,6 +19,7 @@ import { ProjectStore, TaskStore } from "./stores.js";
 import { TaskMessagePump } from "./taskMessagePump.js";
 import { ImplementService } from "./tasks/ImplementService.js";
 import { TaskService } from "./tasks/TaskService.js";
+import { WorkflowEventBus, WorkflowGraphRepo, WorkflowService } from "./workflows/index.js";
 
 dropSudoPrivilegesForLocalServer();
 
@@ -31,6 +32,9 @@ const orchestrations = new OrchestrationsRepo(database.db);
 const orchestrationAgents = new OrchestrationAgentsRepo(database.db);
 const orchestrationMessages = new OrchestrationMessagesRepo(database.db);
 const pullRequestFeedback = new PullRequestFeedbackRepo(database.db);
+const workflowGraphs = new WorkflowGraphRepo(database.db);
+const workflowService = new WorkflowService(workflowGraphs);
+const workflowEvents = new WorkflowEventBus();
 const git = new GitManager();
 const runner = new CodexCliRunner(config.codexBin);
 const client = new Client({ intents: [] });
@@ -62,6 +66,8 @@ const server = new ExcalidrawApiServer({
   orchestrations,
   orchestrationAgents,
   orchestrationMessages,
+  workflows: workflowService,
+  workflowEvents,
 });
 
 pump.onTaskUpdated((task) => {

@@ -11,6 +11,14 @@ import type { AgentFleetPlan, AgentFleetPlanAgent, Orchestration, OrchestrationM
 import type { ProjectStore, TaskStore } from "../stores.js";
 import type { ImplementService } from "../tasks/ImplementService.js";
 import { DEFAULT_MODEL, type Effort, type Project, type Task } from "../types.js";
+import type {
+  PersistedWorkflowGraph,
+  PersistedWorkflowPatch,
+  WorkflowEvent,
+  WorkflowEventBus,
+  WorkflowService,
+  WorkflowPatch,
+} from "../workflows/index.js";
 import { ExcalidrawCardsRepo } from "./ExcalidrawCardsRepo.js";
 import { buildTaskProgress } from "./taskProgress.js";
 import {
@@ -35,6 +43,8 @@ interface ApiDeps {
   orchestrations: OrchestrationsRepo;
   orchestrationAgents: OrchestrationAgentsRepo;
   orchestrationMessages: OrchestrationMessagesRepo;
+  workflows: WorkflowService;
+  workflowEvents: WorkflowEventBus;
 }
 
 type JsonRecord = Record<string, unknown>;
@@ -136,6 +146,30 @@ export class ExcalidrawApiServer {
     const orchestrationLaunchMatch = /^\/api\/orchestrations\/(\d+)\/launch$/.exec(url.pathname);
     if (orchestrationLaunchMatch && req.method === "POST") {
       await this.handleLaunchOrchestration(Number(orchestrationLaunchMatch[1]), req, res);
+      return;
+    }
+    const workflowProjectMatch = /^\/api\/workflows\/project\/(\d+)\/current$/.exec(url.pathname);
+    if (workflowProjectMatch && req.method === "GET") {
+      await this.handleGetProjectWorkflow(Number(workflowProjectMatch[1]), res);
+      return;
+    }
+    const workflowOrchestrationMatch = /^\/api\/workflows\/orchestration\/(\d+)$/.exec(url.pathname);
+    if (workflowOrchestrationMatch && req.method === "GET") {
+      await this.handleGetOrCreateOrchestrationWorkflow(Number(workflowOrchestrationMatch[1]), res);
+      return;
+    }
+    const workflowPatchMatch = /^\/api\/workflows\/orchestration\/(\d+)\/patch$/.exec(url.pathname);
+    if (workflowPatchMatch && req.method === "POST") {
+      await this.handleApplyWorkflowPatch(Number(workflowPatchMatch[1]), req, res);
+      return;
+    }
+    const workflowHistoryMatch = /^\/api\/workflows\/(\d+)\/history$/.exec(url.pathname);
+    if (workflowHistoryMatch && req.method === "GET") {
+      await this.handleWorkflowHistory(Number(workflowHistoryMatch[1]), res);
+      return;
+    }
+    if (url.pathname === "/api/workflows/events" && req.method === "GET") {
+      await this.handleWorkflowEvents(url, req, res);
       return;
     }
     if (url.pathname === "/api/excalidraw/projects" && req.method === "GET") {
@@ -442,6 +476,92 @@ export class ExcalidrawApiServer {
     this.sendJson(res, 201, { orchestration: this.orchestrationView(launched), cards: this.hydrateCards(cards) });
   }
 
+  private async handleGetProjectWorkflow(projectId: number, res: ServerResponse): Promise<void> {
+    const project = this.requireExcalidrawProject(projectId);
+    const workflow = this.deps.workflows.getCurrentGraphForProject(project.id);
+    this.sendJson(res, 200, { workflow: workflow ? workflowView(workflow) : null });
+  }
+
+  private async handleGetOrCreateOrchestrationWorkflow(orchestrationId: number, res: ServerResponse): Promise<void> {
+    const orchestration = this.requireOrchestration(orchestrationId);
+    this.requireExcalidrawProject(orchestration.projectId);
+    const before = this.deps.workflows.getCurrentGraphForOrchestration(orchestrationId);
+    const workflow = this.deps.workflows.getOrCreateForOrchestration(orchestration.projectId, orchestrationId, orchestration.goal);
+    if (!before) {
+      this.deps.workflowEvents.graphCreated(workflow);
+    }
+    this.sendJson(res, before ? 200 : 201, { workflow: workflowView(workflow) });
+  }
+
+  private async handleWorkflowHistory(graphId: number, res: ServerResponse): Promise<void> {
+    const history = this.deps.workflows.listGraphHistory(graphId);
+    this.sendJson(res, 200, { patches: history.map(workflowPatchView) });
+  }
+
+  private async handleApplyWorkflowPatch(orchestrationId: number, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const orchestration = this.requireOrchestration(orchestrationId);
+    this.requireExcalidrawProject(orchestration.projectId);
+    const body = await readJson(req);
+    const patch = workflowPatchFromBody(body);
+    let workflow = this.deps.workflows.getCurrentGraphForOrchestration(orchestrationId);
+    if (!workflow) {
+      workflow = this.deps.workflows.getOrCreateForOrchestration(orchestration.projectId, orchestrationId, orchestration.goal);
+      this.deps.workflowEvents.graphCreated(workflow);
+    }
+
+    try {
+      const updated = this.deps.workflows.applyPlannerPatch(orchestration.projectId, orchestrationId, patch);
+      const history = this.deps.workflows.listGraphHistory(updated.id);
+      const persistedPatch = history[history.length - 1] ?? null;
+      if (persistedPatch) {
+        this.deps.workflowEvents.patchApplied(updated, persistedPatch);
+      }
+      this.sendJson(res, 202, { workflow: workflowView(updated), patch: persistedPatch ? workflowPatchView(persistedPatch) : null });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.deps.workflowEvents.patchRejected({
+        projectId: orchestration.projectId,
+        orchestrationId,
+        graphId: workflow.id,
+        patch,
+        error: message,
+      });
+      this.sendJson(res, isStaleWorkflowError(message) ? 409 : 400, { error: message });
+    }
+  }
+
+  private async handleWorkflowEvents(url: URL, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const projectId = numericQueryParam(url, "projectId");
+    if (projectId === null) {
+      throw new Error("projectId is required.");
+    }
+    const project = this.requireExcalidrawProject(projectId);
+    res.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+    });
+    res.write(": connected\n\n");
+
+    const unsubscribe = this.deps.workflowEvents.subscribe(project.id, (event) => {
+      writeWorkflowSse(res, event);
+    });
+    const keepAlive = setInterval(() => {
+      res.write(": keep-alive\n\n");
+    }, 25000);
+
+    req.on("close", () => {
+      clearInterval(keepAlive);
+      unsubscribe();
+    });
+
+    const current = this.deps.workflows.getCurrentGraphForProject(project.id);
+    if (current) {
+      this.deps.workflowEvents.snapshot(current);
+    }
+  }
+
   private async handleImplement(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const body = await readJson(req);
     const message = stringField(body, "message").trim();
@@ -652,13 +772,17 @@ export class ExcalidrawApiServer {
   private async projectFromQuery(url: URL): Promise<Project> {
     const projectId = numericQueryParam(url, "projectId");
     if (projectId !== null) {
-      const project = this.deps.projects.getById(projectId);
-      if (!project || project.guildId !== this.deps.config.excalidrawProjectGuildId) {
-        throw new Error(`Excalidraw project ${projectId} was not found.`);
-      }
-      return project;
+      return this.requireExcalidrawProject(projectId);
     }
     return this.getDefaultExcalidrawProject();
+  }
+
+  private requireExcalidrawProject(projectId: number): Project {
+    const project = this.deps.projects.getById(projectId);
+    if (!project || project.guildId !== this.deps.config.excalidrawProjectGuildId) {
+      throw new Error(`Excalidraw project ${projectId} was not found.`);
+    }
+    return project;
   }
 
   private async projectFromBody(body: JsonRecord): Promise<Project> {
@@ -1221,6 +1345,49 @@ function aggregateAgents(agents: Array<{ status: string; branchName: string | nu
     branches: agents.map((agent) => agent.branchName).filter(Boolean),
     prs: agents.map((agent) => agent.prUrl).filter(Boolean),
   };
+}
+
+function workflowView(workflow: PersistedWorkflowGraph): JsonRecord {
+  return {
+    id: workflow.id,
+    projectId: workflow.projectId,
+    orchestrationId: workflow.orchestrationId,
+    title: workflow.title,
+    revision: workflow.revision,
+    graph: workflow.graph,
+    createdAt: workflow.createdAt,
+    updatedAt: workflow.updatedAt,
+  };
+}
+
+function workflowPatchView(patch: PersistedWorkflowPatch): JsonRecord {
+  return {
+    id: patch.id,
+    graphId: patch.graphId,
+    projectId: patch.projectId,
+    orchestrationId: patch.orchestrationId,
+    baseRevision: patch.baseRevision,
+    resultingRevision: patch.resultingRevision,
+    patch: patch.patch,
+    source: patch.source,
+    reason: patch.reason,
+    createdAt: patch.createdAt,
+  };
+}
+
+function workflowPatchFromBody(body: JsonRecord): WorkflowPatch {
+  const candidate = body.patch && typeof body.patch === "object" && !Array.isArray(body.patch) ? body.patch : body;
+  return candidate as WorkflowPatch;
+}
+
+function writeWorkflowSse(res: ServerResponse, event: WorkflowEvent): void {
+  res.write(`id: ${event.id}\n`);
+  res.write(`event: ${event.type}\n`);
+  res.write(`data: ${JSON.stringify(event)}\n\n`);
+}
+
+function isStaleWorkflowError(message: string): boolean {
+  return /stale|baseRevision|revision .*does not match/i.test(message);
 }
 
 function arrayOfStrings(value: unknown): string[] {

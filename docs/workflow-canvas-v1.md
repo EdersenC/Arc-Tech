@@ -257,3 +257,84 @@ Workflow state is stored in SQLite as project-scoped graph snapshots plus append
 Stale patch application fails before the graph row is updated. The persistence layer checks both the semantic patch `baseRevision` and the current SQLite `workflow_graphs.revision`.
 
 The persistence service has no Discord, Git, or Excalidraw card dependencies. Canvas cards remain downstream projections and are not mutated by workflow graph persistence.
+
+## API Routes
+
+Workflow graph routes are served by the existing Excalidraw API server. They are local/trusted v1 endpoints for planner/model-owned workflow changes.
+
+Routes:
+
+- `GET /api/workflows/project/:projectId/current`
+- `GET /api/workflows/orchestration/:orchestrationId`
+- `GET /api/workflows/:graphId/history`
+- `POST /api/workflows/orchestration/:orchestrationId/patch`
+- `GET /api/workflows/events?projectId=...`
+
+`GET /api/workflows/orchestration/:orchestrationId` creates a revision `0` workflow graph for the orchestration when none exists yet. The graph starts with a goal node derived from the orchestration goal. The POST patch route then applies semantic `WorkflowPatch` objects against that graph.
+
+Example create/get:
+
+```bash
+curl -s http://127.0.0.1:3123/api/workflows/orchestration/1
+```
+
+Example current project workflow:
+
+```bash
+curl -s http://127.0.0.1:3123/api/workflows/project/1/current
+```
+
+Example patch:
+
+```bash
+curl -s \
+  -X POST \
+  -H 'content-type: application/json' \
+  http://127.0.0.1:3123/api/workflows/orchestration/1/patch \
+  --data '{
+    "patch": {
+      "id": "patch-add-https-api",
+      "graphId": "workflow-project-1-orchestration-1",
+      "baseRevision": 0,
+      "reason": "Add HTTPS API server to the workflow plan.",
+      "author": "planner",
+      "createdAt": "2026-05-09T12:30:00.000Z",
+      "operations": [
+        {
+          "op": "add_node",
+          "node": {
+            "id": "component-https-api",
+            "kind": "backend_component",
+            "status": "active",
+            "title": "HTTPS API server",
+            "createdAt": "2026-05-09T12:30:00.000Z",
+            "updatedAt": "2026-05-09T12:30:00.000Z"
+          }
+        }
+      ]
+    }
+  }'
+```
+
+Example history:
+
+```bash
+curl -s http://127.0.0.1:3123/api/workflows/1/history
+```
+
+Example live stream:
+
+```bash
+curl -N http://127.0.0.1:3123/api/workflows/events?projectId=1
+```
+
+SSE event names:
+
+- `workflow.snapshot`
+- `workflow.graph_created`
+- `workflow.patch_applied`
+- `workflow.patch_rejected`
+
+The stream is project-scoped. Subscribers for project `1` do not receive workflow events emitted for project `2`.
+
+The patch route validates semantic workflow patches and rejects stale revisions, project/orchestration mismatches, unstable IDs, and raw Excalidraw scene fields. It does not run shell commands and does not mutate `excalidraw_cards`.
