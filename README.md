@@ -135,31 +135,40 @@ npm run excalidraw
 
 Task numbers shown in Discord are local to each project/channel. A new project starts at task `#1` even though SQLite keeps a separate internal global row id for component routing.
 
-## Excalidraw MVP
+## Excalidraw Project Runner
 
 Excalidraw is a second UI adapter for the same implementation runner. Start it with `npm run excalidraw`, then open the Vite URL printed in the terminal. The single startup command launches both the API server and the Vite canvas UI.
 If launched with `sudo`, the Excalidraw process drops back to the original user before creating task worktrees so Codex does not inherit root-owned workspaces.
+
+The canvas is project-based. Use the project selector to switch between Excalidraw projects, or create a new project from the top bar without restarting the server. Each Excalidraw project is a normal `projects` row with `guild_id=excalidraw` and its own synthetic channel id, repo path, worktrees path, project-local task numbers, task cards, task history, and remote config. Discord channel projects keep their existing guild/channel mapping and behavior.
 
 The command panel accepts:
 
 ```text
 /implement Add a health check endpoint to the API
+/orchestrate Upgrade the visual runner planning flow
 ```
 
 Modes:
 
-- **Direct Agent** calls `POST /api/implement`, creates the same SQLite task/worktree/queued message path as Discord, starts the task immediately, and draws a task card on the canvas. Direct Agent requires `GITHUB_PR_ENABLED=true` plus a connected project remote so completed work can push a branch and create a PR.
-- **Plan Card Only** persists a visual planning card and does not start Codex.
+- **Direct Agent** calls `POST /api/implement` with the selected `projectId`, creates the same SQLite task/worktree/queued message path as Discord, starts the task immediately, and draws a task card in the current visible canvas area. Direct Agent requires `GITHUB_PR_ENABLED=true` plus a connected remote for the active project so completed work can push a branch and create a PR.
+- **Plan Card Only** persists a visual planning card in the active project and does not start Codex.
 
-Use the repo panel to connect the Excalidraw project to a GitHub remote. The API exposes `GET /api/excalidraw/project` for readiness and `POST /api/excalidraw/project/remote` with `{ "remoteUrl": "https://github.com/owner/repo.git" }` to configure/fetch the repo. If PRs are disabled or no remote is connected, Direct Agent is blocked before task creation instead of silently completing local-only work without a PR.
+Use the repo panel to connect the active Excalidraw project to a GitHub remote. The API exposes `GET /api/excalidraw/projects`, `POST /api/excalidraw/projects`, `GET /api/excalidraw/project?projectId=...`, and `POST /api/excalidraw/project/remote` with `{ "projectId": 1, "remoteUrl": "https://github.com/owner/repo.git" }`. If PRs are disabled or no remote is connected for the active project, Direct Agent is blocked before task creation instead of silently completing local-only work without a PR.
 
-Every Arc-generated Excalidraw element includes `customData.arc` with the card id, source, command, status, task id, and latest progress when one exists. The UI polls `GET /api/tasks` every few seconds and updates card text/status from SQLite. Direct agent cards grow as runner information arrives, including phase, latest activity, PR feedback resolution state, command events, changed files, queue counts, summaries, errors, and PR links. Cards with browser-safe links, especially GitHub PR URLs, also get an Excalidraw element link so the canvas link control can open them. Moving cards persists their canvas position; deleting cards is visual-only for the MVP and never deletes the real task.
+Every Arc-generated Excalidraw element includes `customData.arc` with the card id, source, command, status, task id, and latest progress when one exists. The selected active project is persisted in browser local storage. The UI polls `GET /api/tasks?projectId=...` every few seconds and updates only that project's cards from SQLite without overwriting local drag positions. New cards are placed near the current visible viewport center instead of in a global grid.
+
+Direct agent cards grow as runner information arrives, including phase, latest activity, PR feedback resolution state, command events, changed files, queue counts, summaries, errors, and concise link buttons. Card links are structured data derived from task state, including PR URLs, Discord thread URLs when present, and Excalidraw task detail links. The small link text elements use Excalidraw element links; raw URLs are kept out of the card body. Moving cards persists their canvas position with `PATCH /api/excalidraw/cards/:id`; deleting cards is visual-only for now and never deletes the real task.
+
+Click a task card to open the right-side detail drawer. The drawer loads `GET /api/tasks/:id/history`, showing task status, project, branch, worktree, prompt, changed files, latest activity, command events, final summary or error, full task message history, recent Codex events, and PR feedback events. The drawer also has a follow-up chat box backed by `POST /api/tasks/:id/messages`; messages are queued through the same `TaskMessagePump` path used by Discord task-thread replies. Closed, failed, merged, abandoned, or remote-waiting tasks are rejected with a clear API error.
+
+Excalidraw `/orchestrate` starts a project-scoped visual planning session instead of immediately spawning agents. The parent orchestration card opens a sidebar with the planner transcript, clickable poll-style options, freeform planner replies, final plan review, and a **Spawn Agents** control. Spawning requires explicit approval. When approved, the API creates real child implementation tasks through `ImplementService`, lays their cards out inside one bordered orchestration group in a 3-column grid, and stores parent/child links through task orchestration ids and card metadata. Clicking the outer orchestration card reopens the master plan/history; clicking a child card opens that agent task's normal history and follow-up chat.
 
 The Excalidraw API intentionally does not log in to Discord and does not expose Discord tokens. Execution still flows through `ImplementService`, `TaskMessagePump`, `CodexRunner`, and `GitManager`; the canvas never runs shell commands directly.
 
 For compiled serving, `npm run build` writes the web bundle to `dist/web`; the Excalidraw API serves that directory when Vite is not in front of it.
 
-MVP limitations: only `/implement` is supported, there is no visual `/orchestrate` yet, collaboration is not enabled, and task controls such as diff/merge/cancel remain in the existing Discord task UI for now.
+Current limitations: the Excalidraw planner loop uses structured stored planning state for the MVP; collaborative multi-user editing is not enabled, and task controls such as diff/merge/cancel remain in the existing Discord task UI for now.
 
 ## Project Git Remote
 
@@ -187,9 +196,11 @@ The bot keeps durable state in SQLite at `DATABASE_PATH`. The schema contains:
 - `orchestrations`: parent planner rooms, bounds, final AgentFleetPlan JSON, and status.
 - `orchestration_agents`: child agent rows linked to visible task threads, branches, worktrees, summaries, and optional PR URLs.
 - `orchestration_messages`: parent-thread planner conversation history.
-- `excalidraw_cards`: persisted visual cards, linked task ids, canvas position, label, branch, and status for the Excalidraw UI.
+- `excalidraw_cards`: persisted visual cards, linked task ids, project ids, canvas position, label, branch, and status for the Excalidraw UI.
 
 Project files live under `WORKSPACES_DIR/<guild>/<project-slug>-<channel-id>/` with a `repo/` base checkout and isolated task worktrees in `worktrees/task-<n>/`. Task branches use `codex/task-<n>`, where `<n>` is the project-local task number shown in Discord.
+
+Excalidraw project files use the same project layout under `EXCALIDRAW_WORKSPACES_DIR/excalidraw/<project-slug>-<synthetic-channel-id>/`. Switching canvas projects switches the active project row, so cards, tasks, branches, worktrees, and remote readiness stay scoped to that project.
 
 Orchestration child branches use `codex/orch-<orchestrationId>/agent-<index>-<slug>`. Child worktrees are still isolated under the project `worktrees/` directory.
 

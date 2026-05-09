@@ -159,6 +159,33 @@ export class ProjectStore {
     return row ? mapProject(row) : null;
   }
 
+  listByGuildId(guildId: string): Project[] {
+    const rows = this.db
+      .prepare(
+        `
+        SELECT *
+        FROM projects
+        WHERE guild_id = ?
+        ORDER BY datetime(updated_at) DESC, id DESC
+      `,
+      )
+      .all(guildId) as ProjectRow[];
+    return rows.map(mapProject);
+  }
+
+  getOrCreateNamed(input: { guildId: string; projectName: string; channelId?: string }): Project {
+    const projectName = input.projectName.trim();
+    if (!projectName) {
+      throw new Error("Project name is required.");
+    }
+    const channelId = sanitizeProjectChannelId(input.channelId ?? slugifyChannelName(projectName));
+    return this.getOrCreate({
+      guildId: input.guildId,
+      channelId,
+      channelName: projectName,
+    });
+  }
+
   updateRemote(projectId: number, input: { remoteUrl: string | null; remoteStatus: ProjectRemoteStatus }): Project {
     this.db
       .prepare(
@@ -266,6 +293,11 @@ export class TaskStore {
       )
       .all(projectId, limit) as TaskRow[];
     return rows.map(mapTask);
+  }
+
+  countByProject(projectId: number): number {
+    const row = this.db.prepare("SELECT COUNT(*) AS count FROM tasks WHERE project_id = ?").get(projectId) as { count: number };
+    return Number(row.count);
   }
 
   listTasksWithPullRequests(): Task[] {
@@ -459,6 +491,45 @@ export class TaskStore {
     }));
   }
 
+  listCodexActivity(taskId: number, limit = 200): CodexActivityEvent[] {
+    const rows = this.db
+      .prepare(
+        `
+        SELECT event_type, item_type, payload_json, created_at
+        FROM codex_events
+        WHERE task_id = ?
+        ORDER BY datetime(created_at) ASC, id ASC
+        LIMIT ?
+      `,
+      )
+      .all(taskId, Math.max(1, Math.min(500, Math.floor(limit)))) as Array<{
+      event_type: string;
+      item_type: string | null;
+      payload_json: string;
+      created_at: string;
+    }>;
+    return rows.map((row) => ({
+      eventType: row.event_type,
+      itemType: row.item_type,
+      payloadJson: row.payload_json,
+      createdAt: row.created_at,
+    }));
+  }
+
+  listMessagesByTask(taskId: number): TaskMessage[] {
+    const rows = this.db
+      .prepare(
+        `
+        SELECT *
+        FROM task_messages
+        WHERE task_id = ?
+        ORDER BY datetime(created_at) ASC, id ASC
+      `,
+      )
+      .all(taskId) as TaskMessageRow[];
+    return rows.map(mapTaskMessage);
+  }
+
   getTaskMessageStatusCounts(taskId: number): TaskMessageStatusCounts {
     const counts: TaskMessageStatusCounts = {
       queued: 0,
@@ -552,6 +623,10 @@ function slugifyChannelName(name: string): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 64);
   return slug || "project";
+}
+
+function sanitizeProjectChannelId(value: string): string {
+  return slugifyChannelName(value).slice(0, 96) || "project";
 }
 
 function mapTaskMessage(row: TaskMessageRow): TaskMessage {

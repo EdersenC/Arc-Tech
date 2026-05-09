@@ -1,6 +1,17 @@
 import type { Effort } from "../types.js";
 
 export const ORCHESTRATION_STATUSES = [
+  "draft_created",
+  "asking_questions",
+  "waiting_for_user_choice",
+  "refining_plan",
+  "ready_for_approval",
+  "approved_for_spawn",
+  "spawning_agents",
+  "agents_spawned",
+  "complete",
+  "canceled",
+  "failed",
   "PLANNING",
   "WAITING_USER",
   "READY_TO_ORCHESTRATE",
@@ -26,6 +37,8 @@ export interface Orchestration {
   discordThreadId: string | null;
   discordThreadUrl: string | null;
   controlPanelMessageId: string | null;
+  parentCardId: string | null;
+  borderCardId: string | null;
   authorUserId: string;
   status: OrchestrationStatus;
   goal: string;
@@ -74,6 +87,25 @@ export interface OrchestrationMessage {
   content: string;
   metadataJson: string | null;
   createdAt: string;
+}
+
+export interface PlannerOption {
+  id: string;
+  label: string;
+  description?: string;
+}
+
+export interface PlannerQuestion {
+  id: string;
+  text: string;
+  allowMultiSelect: boolean;
+  options: PlannerOption[];
+}
+
+export interface PlannerQuestionAnswer {
+  questionId: string;
+  selectedOptionIds: string[];
+  customText?: string;
 }
 
 export interface AgentFleetPlanAgent {

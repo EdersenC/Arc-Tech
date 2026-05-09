@@ -18,12 +18,18 @@ body,
 }
 
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
 }
 
 .top-panel {
   display: grid;
+  grid-template-columns: minmax(360px, 0.9fr) minmax(460px, 1.3fr) minmax(300px, 0.9fr);
+  gap: 12px;
+  align-items: stretch;
+  padding: 12px 14px;
   border-bottom: 1px solid #d6cec1;
   background: #fffaf2;
   box-shadow: 0 1px 12px rgba(31, 41, 55, 0.08);
@@ -36,13 +42,30 @@ input {
   height: 100%;
 }
 
-.command-panel {
+.workspace-row {
   display: grid;
-  grid-template-columns: minmax(220px, 300px) auto minmax(320px, 1fr) auto auto minmax(180px, 260px);
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
+}
+
+.arc-shell.with-sidebar .workspace-row {
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 430px);
+}
+
+.project-panel {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(160px, 210px);
   gap: 10px;
   align-items: center;
-  padding: 12px 14px;
-  border-bottom: 1px solid #e4dccf;
+  min-width: 0;
+}
+
+.command-panel {
+  display: grid;
+  grid-template-columns: auto minmax(220px, 1fr) auto auto minmax(170px, 240px);
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
 }
 
 .brand-block {
@@ -75,7 +98,10 @@ input {
 .mode-group button,
 .submit-button,
 .refresh-button,
-.connect-button {
+.connect-button,
+.project-create button,
+.sidebar-header button,
+.chat-panel button {
   min-height: 36px;
   border: 0;
   border-radius: 6px;
@@ -95,7 +121,9 @@ input {
   box-shadow: 0 1px 4px rgba(31, 41, 55, 0.12);
 }
 
-.command-panel input {
+.command-panel input,
+.project-create input,
+.project-selector select {
   width: 100%;
   min-width: 0;
   min-height: 40px;
@@ -107,7 +135,8 @@ input {
   outline: none;
 }
 
-.repo-panel input {
+.repo-panel input,
+.chat-panel textarea {
   width: 100%;
   min-width: 0;
   min-height: 36px;
@@ -120,7 +149,10 @@ input {
 }
 
 .command-panel input:focus,
-.repo-panel input:focus {
+.repo-panel input:focus,
+.project-create input:focus,
+.project-selector select:focus,
+.chat-panel textarea:focus {
   border-color: #2563eb;
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
 }
@@ -132,7 +164,9 @@ input {
 
 .submit-button:disabled,
 .refresh-button:disabled,
-.connect-button:disabled {
+.connect-button:disabled,
+.project-create button:disabled,
+.chat-panel button:disabled {
   cursor: default;
   opacity: 0.65;
 }
@@ -150,15 +184,41 @@ input {
 
 .repo-panel {
   display: grid;
-  grid-template-columns: minmax(280px, 1fr) minmax(320px, 520px) auto;
+  grid-template-columns: minmax(180px, 1fr) auto;
   gap: 10px;
   align-items: center;
-  padding: 10px 14px;
+  min-width: 0;
+}
+
+.project-create {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto;
+  gap: 8px;
+  min-width: 0;
+}
+
+.project-create button {
+  color: #111827;
+  background: #e5e7eb;
+  white-space: nowrap;
+}
+
+.project-selector {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.project-selector span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 650;
 }
 
 .repo-state {
   display: grid;
   gap: 2px;
+  grid-column: 1 / -1;
   min-width: 0;
   font-size: 13px;
 }
@@ -196,6 +256,186 @@ input {
   min-height: 0;
 }
 
+.task-sidebar {
+  min-width: 0;
+  overflow: auto;
+  border-left: 1px solid #d6cec1;
+  background: #fffdf8;
+  padding: 14px;
+}
+
+.sidebar-header {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.sidebar-header h2 {
+  margin: 3px 0 0;
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.sidebar-kicker {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.sidebar-header button,
+.chat-panel button {
+  color: #1f2937;
+  background: #e5e7eb;
+}
+
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.action-row button,
+.option-poll button,
+.agent-link-row {
+  min-height: 34px;
+  border: 1px solid #d6cec1;
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: #1f2937;
+  background: #ffffff;
+  cursor: pointer;
+  text-align: left;
+}
+
+.action-row button:first-child {
+  border-color: #1d4ed8;
+  color: #ffffff;
+  background: #1d4ed8;
+}
+
+.option-poll {
+  align-items: stretch;
+}
+
+.option-poll button {
+  display: grid;
+  gap: 2px;
+}
+
+.option-poll button.selected {
+  border-color: #2563eb;
+  background: #dbeafe;
+}
+
+.option-poll button span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.agent-link-row {
+  width: 100%;
+}
+
+.agent-link-row:disabled,
+.action-row button:disabled,
+.option-poll button:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.sidebar-section {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #ece4d8;
+}
+
+.sidebar-section h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.sidebar-section p,
+.sidebar-section ul {
+  margin: 0;
+}
+
+.sidebar-section pre,
+.history-item pre,
+.event-item pre {
+  max-height: 220px;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid #e5ddcf;
+  border-radius: 6px;
+  padding: 8px;
+  color: #1f2937;
+  background: #f8f4ed;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.details-grid {
+  grid-template-columns: minmax(92px, auto) minmax(0, 1fr);
+  align-items: start;
+  font-size: 13px;
+}
+
+.details-grid span {
+  color: #64748b;
+}
+
+.details-grid strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sidebar-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 14px;
+}
+
+.sidebar-links a {
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: #1d4ed8;
+  background: #eff6ff;
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.chat-panel {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 14px;
+}
+
+.history-list,
+.event-list {
+  display: grid;
+  gap: 8px;
+}
+
+.history-item,
+.event-item {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+}
+
+.history-item div,
+.event-item span {
+  color: #64748b;
+}
+
 .excalidraw {
   --color-primary: #2563eb;
   --color-primary-darker: #1d4ed8;
@@ -204,6 +444,7 @@ input {
 }
 
 @media (max-width: 980px) {
+  .top-panel,
   .command-panel {
     grid-template-columns: 1fr 1fr;
   }
@@ -212,7 +453,9 @@ input {
   .command-panel input,
   .status-strip,
   .repo-state,
-  .repo-panel input {
+  .repo-panel input,
+  .project-panel,
+  .repo-panel {
     grid-column: 1 / -1;
   }
 
@@ -222,11 +465,15 @@ input {
 }
 
 @media (max-width: 560px) {
+  .top-panel,
   .command-panel {
     grid-template-columns: 1fr;
   }
 
-  .repo-panel {
+  .repo-panel,
+  .project-panel,
+  .project-create,
+  .arc-shell.with-sidebar .workspace-row {
     grid-template-columns: 1fr;
   }
 

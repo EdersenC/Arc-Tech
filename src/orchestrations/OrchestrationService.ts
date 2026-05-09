@@ -15,7 +15,7 @@ export class OrchestrationService {
   ) {}
 
   createOrchestration(project: Project, author: { id: string }, goal: string): Orchestration {
-    return this.orchestrations.create({
+    const orchestration = this.orchestrations.create({
       projectId: project.id,
       authorUserId: author.id,
       goal,
@@ -24,6 +24,7 @@ export class OrchestrationService {
       maxAgents: 10,
       autoStartChildren: true,
     });
+    return this.orchestrations.updateStatus(orchestration.id, "draft_created");
   }
 
   appendUserMessage(
@@ -35,8 +36,8 @@ export class OrchestrationService {
       authorUserId: message.authorUserId ?? null,
     });
     const orchestration = this.requireOrchestration(orchestrationId);
-    if (orchestration.status === "WAITING_USER") {
-      this.orchestrations.updateStatus(orchestrationId, "PLANNING");
+    if (isConversationState(orchestration.status)) {
+      this.orchestrations.updateStatus(orchestrationId, "refining_plan");
     }
   }
 
@@ -74,6 +75,10 @@ export class OrchestrationService {
     return this.orchestrations.updateStatus(orchestrationId, status);
   }
 
+  updateCardIds(orchestrationId: number, parentCardId: string | null, borderCardId: string | null): Orchestration {
+    return this.orchestrations.updateCardIds(orchestrationId, parentCardId, borderCardId);
+  }
+
   updateThread(orchestrationId: number, threadId: string, threadUrl: string | null): Orchestration {
     return this.orchestrations.updateThread(orchestrationId, threadId, threadUrl);
   }
@@ -99,4 +104,16 @@ export class OrchestrationService {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function isConversationState(status: OrchestrationStatus): boolean {
+  return [
+    "WAITING_USER",
+    "ready_for_approval",
+    "asking_questions",
+    "waiting_for_user_choice",
+    "refining_plan",
+    "draft_created",
+    "PLANNING",
+  ].includes(status);
 }

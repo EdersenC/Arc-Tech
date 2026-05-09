@@ -66,6 +66,8 @@ export class AppDatabase {
         discord_thread_id TEXT,
         discord_thread_url TEXT,
         control_panel_message_id TEXT,
+        parent_card_id TEXT,
+        border_card_id TEXT,
         author_user_id TEXT NOT NULL,
         status TEXT NOT NULL,
         goal TEXT NOT NULL,
@@ -187,6 +189,8 @@ export class AppDatabase {
         title TEXT NOT NULL,
         label TEXT NOT NULL,
         status TEXT NOT NULL,
+        parent_card_id TEXT,
+        metadata_json TEXT,
         branch TEXT,
         x REAL NOT NULL DEFAULT 80,
         y REAL NOT NULL DEFAULT 80,
@@ -198,6 +202,14 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_excalidraw_cards_task ON excalidraw_cards(task_id);
       CREATE INDEX IF NOT EXISTS idx_excalidraw_cards_project ON excalidraw_cards(project_id, updated_at);
     `);
+    this.addColumns("orchestrations", [
+      ["parent_card_id", "TEXT"],
+      ["border_card_id", "TEXT"],
+    ]);
+    this.addColumns("excalidraw_cards", [
+      ["parent_card_id", "TEXT"],
+      ["metadata_json", "TEXT"],
+    ]);
     this.addColumns("pull_request_feedback_events", [
       ["reaction_status", "TEXT NOT NULL DEFAULT 'pending'"],
       ["reaction_error", "TEXT"],
