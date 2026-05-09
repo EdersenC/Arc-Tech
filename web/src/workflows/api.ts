@@ -60,8 +60,8 @@ export interface ArcWorkflowGraph {
   decisions: unknown[];
   risks: unknown[];
   openQuestions: unknown[];
-  layoutHints: unknown[];
-  revisions: unknown[];
+  layoutHints: ArcWorkflowLayoutHint[];
+  revisions: Array<{ revision?: number; reason?: string; patchId?: string; createdAt?: string }>;
   createdAt: string;
   updatedAt: string;
 }
@@ -73,6 +73,8 @@ export interface ArcWorkflowNode {
   title: string;
   summary?: string;
   body?: string;
+  tags?: string[];
+  owner?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -83,8 +85,19 @@ export interface ArcWorkflowEdge {
   fromNodeId: string;
   toNodeId: string;
   label?: string;
+  status?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ArcWorkflowLayoutHint {
+  id: string;
+  nodeId: string;
+  sectionId?: string;
+  parentNodeId?: string;
+  lane?: string;
+  order?: number;
+  group?: string;
 }
 
 export interface ArcWorkflowPatch {

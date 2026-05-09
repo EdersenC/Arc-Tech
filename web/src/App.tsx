@@ -23,6 +23,9 @@ import {
   type ArcProject,
   type ArcTaskDetail,
 } from "./api";
+import { graphToExcalidrawElements, workflowNodeElementId } from "./workflows/workflowElements";
+import { useWorkflowStream } from "./workflows/useWorkflowStream";
+import type { ArcPersistedWorkflowGraph, ArcWorkflowNode } from "./workflows/api";
 
 const ACTIVE_PROJECT_KEY = "arc-tech.excalidraw.activeProjectId";
 
@@ -63,6 +66,15 @@ type ArcElement = {
       link?: string | null;
       linkLabel?: string | null;
     };
+    arcWorkflow?: {
+      graphId: string;
+      projectId: number;
+      orchestrationId: number | null;
+      workflowNodeId?: string;
+      workflowEdgeId?: string;
+      semanticType: string;
+      revision: number;
+    };
   };
 };
 
@@ -72,6 +84,8 @@ export default function App() {
   const cardsRef = useRef<ArcCard[]>([]);
   const activeProjectIdRef = useRef<number | null>(initialProjectId());
   const selectedCardIdRef = useRef<string | null>(null);
+  const selectedWorkflowNodeIdRef = useRef<string | null>(null);
+  const workflowGraphRef = useRef<ArcPersistedWorkflowGraph | null>(null);
   const selectedTaskIdRef = useRef<number | null>(initialTaskId());
   const selectedOrchestrationIdRef = useRef<number | null>(null);
   const initialDeepLinkTaskIdRef = useRef<number | null>(selectedTaskIdRef.current);
@@ -88,6 +102,7 @@ export default function App() {
   const [newProjectName, setNewProjectName] = useState("");
   const [remoteUrl, setRemoteUrl] = useState("");
   const [selectedCard, setSelectedCard] = useState<ArcCard | null>(null);
+  const [selectedWorkflowNode, setSelectedWorkflowNode] = useState<ArcWorkflowNode | null>(null);
   const [taskDetail, setTaskDetail] = useState<ArcTaskDetail | null>(null);
   const [orchestrationDetail, setOrchestrationDetail] = useState<ArcOrchestrationView | null>(null);
   const [chatMessage, setChatMessage] = useState("");
@@ -99,6 +114,7 @@ export default function App() {
   const [chatBusy, setChatBusy] = useState(false);
   const [status, setStatus] = useState("Ready");
   const [error, setError] = useState<string | null>(null);
+  const workflowStream = useWorkflowStream(activeProjectId);
 
   const loadTaskDetail = useCallback(async (taskId: number) => {
     const detail = await getTaskHistory(taskId);
@@ -125,9 +141,28 @@ export default function App() {
     const api = excalidrawApiRef.current;
     if (!api) return;
     const current = api.getSceneElements();
-    const nonArcElements = current.filter((element) => !isArcElement(element));
+    const nonCardElements = current.filter((element) => !isArcCardElement(element));
     sceneApplyUntilRef.current = Date.now() + 250;
-    api.updateScene({ elements: [...nonArcElements, ...cardsToElements(mergedCards)] });
+    api.updateScene({ elements: [...nonCardElements, ...cardsToElements(mergedCards)] });
+  }, []);
+
+  const applyWorkflowToScene = useCallback((workflow: ArcPersistedWorkflowGraph | null) => {
+    workflowGraphRef.current = workflow;
+    if (selectedWorkflowNodeIdRef.current) {
+      setSelectedWorkflowNode(workflow?.graph.nodes.find((node) => node.id === selectedWorkflowNodeIdRef.current) ?? null);
+    }
+    const api = excalidrawApiRef.current;
+    if (!api) return;
+    const current = api.getSceneElements();
+    const nonWorkflowElements = current.filter((element) => !isWorkflowElement(element));
+    const workflowElements = workflow
+      ? graphToExcalidrawElements(workflow.graph, {
+          persisted: workflow,
+          avoidRects: cardsRef.current.map((card) => ({ x: card.x, y: card.y, width: card.width, height: card.height })),
+        })
+      : [];
+    sceneApplyUntilRef.current = Date.now() + 250;
+    api.updateScene({ elements: [...nonWorkflowElements, ...workflowElements] });
   }, []);
 
   const refresh = useCallback(async (projectId = activeProjectIdRef.current) => {
@@ -165,17 +200,20 @@ export default function App() {
       setActiveProjectId(projectId);
       window.localStorage.setItem(ACTIVE_PROJECT_KEY, String(projectId));
       cardsRef.current = [];
+      workflowGraphRef.current = null;
       setCards([]);
       setSelectedCard(null);
+      setSelectedWorkflowNode(null);
       setTaskDetail(null);
       setOrchestrationDetail(null);
       selectedCardIdRef.current = null;
+      selectedWorkflowNodeIdRef.current = null;
       selectedTaskIdRef.current = initialDeepLinkTaskIdRef.current;
       selectedOrchestrationIdRef.current = null;
       initialDeepLinkTaskIdRef.current = null;
       const api = excalidrawApiRef.current;
       if (api) {
-        const nonArcElements = api.getSceneElements().filter((element) => !isArcElement(element));
+        const nonArcElements = api.getSceneElements().filter((element) => !isArcManagedElement(element));
         sceneApplyUntilRef.current = Date.now() + 250;
         api.updateScene({ elements: nonArcElements });
       }
@@ -187,6 +225,8 @@ export default function App() {
   const selectCard = useCallback(
     (cardId: string | null) => {
       selectedCardIdRef.current = cardId;
+      selectedWorkflowNodeIdRef.current = null;
+      setSelectedWorkflowNode(null);
       const card = cardId ? cardsRef.current.find((candidate) => candidate.id === cardId) ?? null : null;
       setSelectedCard(card);
       const orchestrationId = card?.metadata?.orchestrationId ?? null;
@@ -215,11 +255,24 @@ export default function App() {
     [loadOrchestrationDetail, loadTaskDetail],
   );
 
-  const closeSidebar = useCallback(() => {
+  const selectWorkflowNode = useCallback((nodeId: string | null) => {
+    selectedWorkflowNodeIdRef.current = nodeId;
     selectedCardIdRef.current = null;
     selectedTaskIdRef.current = null;
     selectedOrchestrationIdRef.current = null;
     setSelectedCard(null);
+    setTaskDetail(null);
+    setOrchestrationDetail(null);
+    setSelectedWorkflowNode(nodeId ? workflowGraphRef.current?.graph.nodes.find((node) => node.id === nodeId) ?? null : null);
+  }, []);
+
+  const closeSidebar = useCallback(() => {
+    selectedCardIdRef.current = null;
+    selectedWorkflowNodeIdRef.current = null;
+    selectedTaskIdRef.current = null;
+    selectedOrchestrationIdRef.current = null;
+    setSelectedCard(null);
+    setSelectedWorkflowNode(null);
     setTaskDetail(null);
     setOrchestrationDetail(null);
     setSelectedOptions(new Set());
@@ -229,6 +282,24 @@ export default function App() {
       api.updateScene({ appState: { selectedElementIds: {} } });
     }
   }, []);
+
+  useEffect(() => {
+    applyWorkflowToScene(workflowStream.graph);
+  }, [applyWorkflowToScene, workflowStream.graph]);
+
+  useEffect(() => {
+    const parts = [
+      workflowStream.status === "connected" ? "Workflow connected" : workflowStream.status === "connecting" ? "Workflow connecting" : "Workflow disconnected",
+      workflowStream.revision !== null ? `rev ${workflowStream.revision}` : "no graph",
+      workflowStream.latestPatchReason ? `latest: ${workflowStream.latestPatchReason}` : null,
+    ].filter(Boolean);
+    if (parts.length) {
+      setStatus((current) => (current.startsWith("Moved ") ? current : parts.join(" · ")));
+    }
+    if (workflowStream.error) {
+      setError(workflowStream.error);
+    }
+  }, [workflowStream.status, workflowStream.revision, workflowStream.latestPatchReason, workflowStream.error]);
 
   useEffect(() => {
     let canceled = false;
@@ -449,9 +520,23 @@ export default function App() {
     if (Date.now() < sceneApplyUntilRef.current) {
       return;
     }
-    const selectedId = selectedCardIdFromAppState(elements, appState);
-    if (selectedId !== selectedCardIdRef.current) {
-      selectCard(selectedId);
+    const selectedWorkflowNodeId = selectedWorkflowNodeIdFromAppState(elements, appState);
+    if (selectedWorkflowNodeId !== selectedWorkflowNodeIdRef.current) {
+      if (selectedWorkflowNodeId) {
+        selectWorkflowNode(selectedWorkflowNodeId);
+      } else if (selectedWorkflowNodeIdRef.current) {
+        selectWorkflowNode(null);
+      }
+    }
+    if (!selectedWorkflowNodeId) {
+      const selectedId = selectedCardIdFromAppState(elements, appState);
+      if (selectedId !== selectedCardIdRef.current) {
+        selectCard(selectedId);
+      }
+    }
+    const workflow = workflowGraphRef.current;
+    if (workflow && workflowLayerNeedsRestore(elements, workflow)) {
+      applyWorkflowToScene(workflow);
     }
     const updates = changedCardPositions(elements, cardsRef.current);
     if (updates.length === 0) {
@@ -485,9 +570,10 @@ export default function App() {
   }
 
   const directAgentBlocked = /^\/implement/i.test(command.trim()) && mode === "direct_agent" && (!project || !project.prReady);
+  const sidebarOpen = Boolean(selectedCard || selectedWorkflowNode);
 
   return (
-    <div className={`arc-shell ${selectedCard ? "with-sidebar" : ""}`}>
+    <div className={`arc-shell ${sidebarOpen ? "with-sidebar" : ""}`}>
       <div className="top-panel">
         <div className="project-panel">
           <div className="brand-block">
@@ -566,7 +652,7 @@ export default function App() {
             Refresh
           </button>
           <div className="status-strip" aria-live="polite">
-            {error ?? status}
+            {error ?? workflowStatusText(workflowStream.status, workflowStream.revision, workflowStream.latestPatchReason, status)}
           </div>
         </form>
         <form className="repo-panel" onSubmit={handleConnectRemote}>
@@ -590,12 +676,23 @@ export default function App() {
               if (cardsRef.current.length > 0) {
                 applyCardsToScene(cardsRef.current);
               }
+              if (workflowGraphRef.current) {
+                applyWorkflowToScene(workflowGraphRef.current);
+              }
             }}
             onChange={(elements, appState) => handleSceneChange(elements as readonly ArcElement[], appState as unknown as ArcAppState)}
             initialData={{ appState: { viewBackgroundColor: "#f7f4ee" } }}
           />
         </div>
-        {selectedCard && orchestrationDetail ? (
+        {selectedWorkflowNode ? (
+          <WorkflowSidebar
+            node={selectedWorkflowNode}
+            workflow={workflowGraphRef.current}
+            streamStatus={workflowStream.status}
+            latestPatchReason={workflowStream.latestPatchReason}
+            onClose={closeSidebar}
+          />
+        ) : selectedCard && orchestrationDetail ? (
           <OrchestrationSidebar
             card={selectedCard}
             detail={orchestrationDetail}
@@ -913,6 +1010,57 @@ function TaskSidebar(props: {
   );
 }
 
+function WorkflowSidebar(props: {
+  node: ArcWorkflowNode;
+  workflow: ArcPersistedWorkflowGraph | null;
+  streamStatus: string;
+  latestPatchReason: string | null;
+  onClose: () => void;
+}) {
+  return (
+    <aside className="task-sidebar workflow-sidebar">
+      <div className="sidebar-header">
+        <div>
+          <div className="sidebar-kicker">Workflow Node</div>
+          <h2>{props.node.title}</h2>
+        </div>
+        <button type="button" onClick={props.onClose} aria-label="Close workflow details">
+          Close
+        </button>
+      </div>
+      <div className="sidebar-section details-grid">
+        <span>Status</span>
+        <strong>{props.node.status}</strong>
+        <span>Kind</span>
+        <strong>{props.node.kind}</strong>
+        <span>Node ID</span>
+        <strong>{props.node.id}</strong>
+        <span>Graph</span>
+        <strong>{props.workflow?.graph.id ?? "unknown"}</strong>
+        <span>Revision</span>
+        <strong>{props.workflow?.revision ?? "none"}</strong>
+        <span>Stream</span>
+        <strong>{props.streamStatus}</strong>
+      </div>
+      <div className="sidebar-section">
+        <h3>Description</h3>
+        <pre>{props.node.body ?? props.node.summary ?? "No description recorded."}</pre>
+      </div>
+      {props.node.tags?.length ? (
+        <div className="sidebar-section">
+          <h3>Tags</h3>
+          <ListOrEmpty values={props.node.tags} empty="No tags recorded." />
+        </div>
+      ) : null}
+      <div className="sidebar-section">
+        <h3>Workflow Status</h3>
+        <p>{workflowStatusText(props.streamStatus, props.workflow?.revision ?? null, props.latestPatchReason, "Workflow idle")}</p>
+        <p className="muted-copy">Workflow nodes are read-only on the canvas in v1.</p>
+      </div>
+    </aside>
+  );
+}
+
 function LinkList({ links }: { links: ArcLink[] }) {
   if (links.length === 0) return null;
   return (
@@ -1054,8 +1202,31 @@ function selectedCardIdFromAppState(elements: readonly ArcElement[], appState: A
   return null;
 }
 
-function isArcElement(element: ArcElement): boolean {
+function selectedWorkflowNodeIdFromAppState(elements: readonly ArcElement[], appState: ArcAppState): string | null {
+  const selectedIds = appState.selectedElementIds ?? {};
+  for (const element of elements) {
+    if (!selectedIds[element.id]) continue;
+    const nodeId = element.customData?.arcWorkflow?.workflowNodeId;
+    if (nodeId) return nodeId;
+  }
+  return null;
+}
+
+function isArcCardElement(element: ArcElement): boolean {
   return element.customData?.arc?.source === "excalidraw" || Boolean(cardIdFromElement(element));
+}
+
+function isWorkflowElement(element: ArcElement): boolean {
+  return Boolean(element.customData?.arcWorkflow);
+}
+
+function isArcManagedElement(element: ArcElement): boolean {
+  return isArcCardElement(element) || isWorkflowElement(element);
+}
+
+function workflowLayerNeedsRestore(elements: readonly ArcElement[], workflow: ArcPersistedWorkflowGraph): boolean {
+  const elementIds = new Set(elements.filter(isWorkflowElement).map((element) => element.id));
+  return workflow.graph.nodes.some((node) => !elementIds.has(workflowNodeElementId(workflow.graph.id, node.id)));
 }
 
 function samePosition(left: ArcCard, right: ArcCard): boolean {
@@ -1253,6 +1424,19 @@ function projectStatusLine(project: ArcProject): string {
   const pr = project.githubPrEnabled ? "PR config on" : "PR config off";
   const ready = project.prReady ? "ready" : project.blockers.join(" ");
   return `${remote} · ${pr} · ${ready} · ${project.taskCount} task${project.taskCount === 1 ? "" : "s"}`;
+}
+
+function workflowStatusText(streamStatus: string, revision: number | null, latestPatchReason: string | null, fallback: string): string {
+  const connected =
+    streamStatus === "connected"
+      ? "Workflow connected"
+      : streamStatus === "connecting"
+        ? "Workflow connecting"
+        : streamStatus === "error"
+          ? "Workflow reconnecting"
+          : "Workflow disconnected";
+  const parts = [connected, revision !== null ? `rev ${revision}` : "no graph", latestPatchReason ? `latest: ${latestPatchReason}` : fallback].filter(Boolean);
+  return parts.join(" · ");
 }
 
 function projectBlockerText(project: ArcProject | null): string {

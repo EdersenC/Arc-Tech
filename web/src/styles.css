@@ -364,6 +364,11 @@ textarea {
   margin: 0;
 }
 
+.muted-copy {
+  color: #64748b;
+  font-size: 13px;
+}
+
 .sidebar-section pre,
 .history-item pre,
 .event-item pre {
