@@ -369,6 +369,12 @@ textarea {
   font-size: 13px;
 }
 
+.error-block {
+  border-left: 3px solid #dc2626;
+  background: #fef2f2;
+  padding: 10px 10px 14px;
+}
+
 .sidebar-section pre,
 .history-item pre,
 .event-item pre {

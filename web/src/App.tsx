@@ -354,6 +354,9 @@ export default function App() {
       if (isOrchestrate) {
         const response = await submitOrchestrate(trimmed, project.projectId, position.x, position.y);
         applyCardsToScene([response.card, ...cardsRef.current.filter((card) => card.id !== response.card.id)]);
+        if (response.workflow) {
+          applyWorkflowToScene(response.workflow);
+        }
         setOrchestrationDetail(response.orchestration);
         selectCard(response.card.id);
         setCommand("/orchestrate ");
@@ -745,6 +748,7 @@ function OrchestrationSidebar(props: {
   const question = orchestration.latestQuestion;
   const canSpawn = ["ready_for_approval", "READY_TO_ORCHESTRATE"].includes(orchestration.status);
   const canAnswerQuestion = ["waiting_for_user_choice", "asking_questions", "refining_plan", "draft_created"].includes(orchestration.status);
+  const workflowPatch = orchestration.latestWorkflowPatch;
   return (
     <aside className="task-sidebar orchestration-sidebar">
       <div className="sidebar-header">
@@ -769,7 +773,17 @@ function OrchestrationSidebar(props: {
         <strong>{detail.aggregate.done} done / {detail.aggregate.total} total</strong>
         <span>Branches</span>
         <strong>{detail.aggregate.branches.length || "none"}</strong>
+        <span>Workflow</span>
+        <strong>{orchestration.workflow ? `rev ${orchestration.workflow.revision}` : "not created"}</strong>
+        <span>Patch</span>
+        <strong>{workflowPatch ? workflowPatchLine(workflowPatch) : "none"}</strong>
       </div>
+      {workflowPatch?.status === "rejected" && workflowPatch.error ? (
+        <div className="sidebar-section error-block">
+          <h3>Workflow Patch Rejected</h3>
+          <pre>{workflowPatch.error}</pre>
+        </div>
+      ) : null}
       <div className="sidebar-section">
         <h3>Goal</h3>
         <pre>{orchestration.goal}</pre>
@@ -1437,6 +1451,16 @@ function workflowStatusText(streamStatus: string, revision: number | null, lates
           : "Workflow disconnected";
   const parts = [connected, revision !== null ? `rev ${revision}` : "no graph", latestPatchReason ? `latest: ${latestPatchReason}` : fallback].filter(Boolean);
   return parts.join(" · ");
+}
+
+function workflowPatchLine(patch: { status?: string; reason?: string; resultingRevision?: number; error?: string }): string {
+  if (patch.status === "applied") {
+    return `applied${patch.resultingRevision !== undefined ? ` rev ${patch.resultingRevision}` : ""}${patch.reason ? ` · ${patch.reason}` : ""}`;
+  }
+  if (patch.status === "rejected") {
+    return `rejected${patch.reason ? ` · ${patch.reason}` : ""}${patch.error ? ` · ${patch.error}` : ""}`;
+  }
+  return patch.status ?? "none";
 }
 
 function projectBlockerText(project: ArcProject | null): string {

@@ -11,9 +11,11 @@ import type { AgentFleetPlan, AgentFleetPlanAgent, Orchestration, OrchestrationM
 import type { ProjectStore, TaskStore } from "../stores.js";
 import type { ImplementService } from "../tasks/ImplementService.js";
 import { DEFAULT_MODEL, type Effort, type Project, type Task } from "../types.js";
+import { parsePlannerWorkflowPatch } from "../workflows/index.js";
 import type {
   PersistedWorkflowGraph,
   PersistedWorkflowPatch,
+  WorkflowGraph,
   WorkflowEvent,
   WorkflowEventBus,
   WorkflowService,
@@ -248,11 +250,17 @@ export class ExcalidrawApiServer {
       metadata: { source: "excalidraw", kind: "initial_prompt" },
     });
 
+    const workflowState = this.getOrCreateWorkflowForOrchestration(orchestration);
     const question = plannerQuestion(orchestration, project, 0);
-    const message = plannerQuestionMessage(orchestration.goal, project, question);
+    const message = plannerQuestionMessage(orchestration.goal, project, question, workflowState.workflow);
     this.deps.orchestrationMessages.create(orchestration.id, "planner", message, {
-      metadata: { kind: "question", question },
+      metadata: { kind: "question", question, workflow: workflowMessageMetadata(workflowState.workflow), plannerPrompt: workflowPlannerPromptContract(workflowState.workflow) },
     });
+    if (workflowState.created) {
+      this.deps.workflowEvents.graphCreated(workflowState.workflow);
+    } else {
+      this.deps.workflowEvents.snapshot(workflowState.workflow);
+    }
     const updated = this.deps.orchestrations.updateStatus(orchestration.id, "waiting_for_user_choice");
     const label = orchestrationParentLabel(updated, project, message);
     const size = orchestrationParentSize(label, undefined, orchestration.maxAgents);
@@ -276,7 +284,7 @@ export class ExcalidrawApiServer {
       },
     });
     const saved = this.deps.orchestrations.updateCardIds(orchestration.id, card.id, null);
-    this.sendJson(res, 201, { orchestration: this.orchestrationView(saved), card: this.hydrateCard(card) });
+    this.sendJson(res, 201, { orchestration: this.orchestrationView(saved), card: this.hydrateCard(card), workflow: workflowView(workflowState.workflow) });
   }
 
   private async handleGetOrchestration(orchestrationId: number, res: ServerResponse): Promise<void> {
@@ -889,6 +897,7 @@ export class ExcalidrawApiServer {
     const agents = this.deps.orchestrationAgents.listByOrchestrationId(orchestration.id);
     const parentCard = orchestration.parentCardId ? this.deps.cards.findById(orchestration.parentCardId) : null;
     const borderCard = orchestration.borderCardId ? this.deps.cards.findById(orchestration.borderCardId) : null;
+    const workflow = this.deps.workflows.getCurrentGraphForOrchestration(orchestration.id);
     return {
       orchestration: {
         ...orchestration,
@@ -900,6 +909,8 @@ export class ExcalidrawApiServer {
         remoteUrl: project?.remoteUrl ?? null,
         latestQuestion: latestQuestion(messages),
         finalPlan: parseJson(orchestration.finalPlanJson),
+        workflow: workflow ? workflowView(workflow) : null,
+        latestWorkflowPatch: latestWorkflowPatchMetadata(messages),
       },
       messages: messages.map((message) => ({ ...message, metadata: parseJson(message.metadataJson) })),
       agents,
@@ -917,6 +928,10 @@ export class ExcalidrawApiServer {
     const orchestration = this.requireOrchestration(orchestrationId);
     const project = requireValue(this.deps.projects.getById(orchestration.projectId), `Project #${orchestration.projectId} not found.`);
     const messages = this.deps.orchestrationMessages.listByOrchestrationId(orchestrationId);
+    const workflowState = this.getOrCreateWorkflowForOrchestration(orchestration);
+    if (workflowState.created) {
+      this.deps.workflowEvents.graphCreated(workflowState.workflow);
+    }
     const answerCount = messages.filter((message) => {
       const metadata = parseJson(message.metadataJson) as { kind?: string } | null;
       return metadata?.kind === "option_answer" || metadata?.kind === "freeform";
@@ -928,35 +943,128 @@ export class ExcalidrawApiServer {
       const step = wantsMorePlanning ? Math.max(2, answerCount) : answerCount;
       this.deps.orchestrations.clearFinalPlan(orchestrationId, "waiting_for_user_choice");
       const question = plannerQuestion(orchestration, project, step);
-      const message = plannerQuestionMessage(orchestration.goal, project, question);
+      const plannerPatch = latestUser ? workflowPatchForPlannerTurn(workflowState.workflow, orchestration, latestUser) : null;
+      const message = appendWorkflowPatchBlock(plannerQuestionMessage(orchestration.goal, project, question, workflowState.workflow), plannerPatch);
+      const workflowPatch = this.processPlannerWorkflowPatch(orchestration, message, workflowState.workflow);
       this.deps.orchestrationMessages.create(orchestrationId, "planner", message, {
-        metadata: { kind: "question", question },
+        metadata: {
+          kind: "question",
+          question,
+          workflow: workflowMessageMetadata(workflowPatch.workflow ?? workflowState.workflow),
+          workflowPatch: workflowPatch.metadata,
+          plannerPrompt: workflowPlannerPromptContract(workflowPatch.workflow ?? workflowState.workflow),
+        },
       });
       const updated = this.deps.orchestrations.updateStatus(orchestrationId, "waiting_for_user_choice");
       this.refreshParentOrchestrationCard(updated, message, "planning");
       return updated;
     }
 
-    const plan = buildFleetPlan(orchestration, project, messages);
+    const plannerPatch = latestUser ? workflowPatchForPlannerTurn(workflowState.workflow, orchestration, latestUser) : null;
+    const readyContent = appendWorkflowPatchBlock(
+      readyMessage(buildFleetPlan(orchestration, project, messages, workflowState.workflow)),
+      plannerPatch,
+    );
+    const workflowPatch = this.processPlannerWorkflowPatch(orchestration, readyContent, workflowState.workflow);
+    const plan = buildFleetPlan(orchestration, project, messages, workflowPatch.workflow ?? workflowState.workflow);
     const finalPlanJson = stableJson(plan);
     this.deps.orchestrations.updateFinalPlan(orchestrationId, finalPlanJson);
-    this.deps.orchestrationMessages.create(orchestrationId, "planner", readyMessage(plan), {
-      metadata: { kind: "ready", readySummary: plan.architectureSummary, plan },
+    const ready = appendWorkflowPatchBlock(readyMessage(plan), plannerPatch);
+    this.deps.orchestrationMessages.create(orchestrationId, "planner", ready, {
+      metadata: {
+        kind: "ready",
+        readySummary: plan.architectureSummary,
+        plan,
+        workflow: workflowMessageMetadata(workflowPatch.workflow ?? workflowState.workflow),
+        workflowPatch: workflowPatch.metadata,
+        plannerPrompt: workflowPlannerPromptContract(workflowPatch.workflow ?? workflowState.workflow),
+      },
     });
     const updated = this.deps.orchestrations.updateStatus(orchestrationId, "ready_for_approval");
-    this.refreshParentOrchestrationCard(updated, readyMessage(plan), "ready");
+    this.refreshParentOrchestrationCard(updated, ready, "ready");
     return updated;
   }
 
   private ensureFleetPlan(orchestrationId: number, project: Project): AgentFleetPlan {
     const orchestration = this.requireOrchestration(orchestrationId);
+    const workflow = this.deps.workflows.getCurrentGraphForOrchestration(orchestrationId);
     if (orchestration.finalPlanJson) {
       const parsed = parseJson(orchestration.finalPlanJson) as AgentFleetPlan | null;
-      if (parsed?.agents?.length) return parsed;
+      if (parsed?.agents?.length) {
+        const withWorkflow = workflow ? withWorkflowSharedContext(parsed, workflow.graph) : parsed;
+        if (withWorkflow !== parsed) {
+          this.deps.orchestrations.updateFinalPlan(orchestrationId, stableJson(withWorkflow));
+        }
+        return withWorkflow;
+      }
     }
-    const plan = buildFleetPlan(orchestration, project, this.deps.orchestrationMessages.listByOrchestrationId(orchestrationId));
+    const plan = buildFleetPlan(orchestration, project, this.deps.orchestrationMessages.listByOrchestrationId(orchestrationId), workflow ?? undefined);
     this.deps.orchestrations.updateFinalPlan(orchestrationId, stableJson(plan));
     return plan;
+  }
+
+  private getOrCreateWorkflowForOrchestration(orchestration: Orchestration): { workflow: PersistedWorkflowGraph; created: boolean } {
+    const before = this.deps.workflows.getCurrentGraphForOrchestration(orchestration.id);
+    const workflow = this.deps.workflows.getOrCreateForOrchestration(orchestration.projectId, orchestration.id, orchestration.goal);
+    return { workflow, created: !before };
+  }
+
+  private processPlannerWorkflowPatch(
+    orchestration: Orchestration,
+    plannerContent: string,
+    fallbackWorkflow: PersistedWorkflowGraph,
+  ): { metadata: JsonRecord; workflow: PersistedWorkflowGraph | null } {
+    const parsed = parsePlannerWorkflowPatch(plannerContent);
+    if (parsed.status === "none") {
+      return { metadata: { status: "none" }, workflow: null };
+    }
+    if (parsed.status === "rejected") {
+      this.deps.workflowEvents.patchRejected({
+        projectId: orchestration.projectId,
+        orchestrationId: orchestration.id,
+        graphId: fallbackWorkflow.id,
+        error: parsed.error,
+      });
+      return { metadata: { status: "rejected", error: parsed.error }, workflow: null };
+    }
+
+    try {
+      const updated = this.deps.workflows.applyPlannerPatch(orchestration.projectId, orchestration.id, parsed.patch);
+      const history = this.deps.workflows.listGraphHistory(updated.id);
+      const persistedPatch = history[history.length - 1] ?? null;
+      if (persistedPatch) {
+        this.deps.workflowEvents.patchApplied(updated, persistedPatch);
+      }
+      return {
+        metadata: {
+          status: "applied",
+          patchId: parsed.patch.id,
+          reason: parsed.patch.reason,
+          baseRevision: parsed.patch.baseRevision,
+          resultingRevision: updated.revision,
+        },
+        workflow: updated,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.deps.workflowEvents.patchRejected({
+        projectId: orchestration.projectId,
+        orchestrationId: orchestration.id,
+        graphId: fallbackWorkflow.id,
+        patch: parsed.patch,
+        error: message,
+      });
+      return {
+        metadata: {
+          status: "rejected",
+          patchId: parsed.patch.id,
+          reason: parsed.patch.reason,
+          baseRevision: parsed.patch.baseRevision,
+          error: message,
+        },
+        workflow: null,
+      };
+    }
   }
 
   private refreshParentOrchestrationCard(orchestration: Orchestration, latestMessage: string, status: string): void {
@@ -1096,17 +1204,18 @@ function plannerQuestion(orchestration: Orchestration, project: Project, step: n
   };
 }
 
-function plannerQuestionMessage(goal: string, project: Project, question: PlannerQuestion): string {
+function plannerQuestionMessage(goal: string, project: Project, question: PlannerQuestion, workflow?: PersistedWorkflowGraph): string {
   return [
     `Planning: ${oneLine(goal, 120)}`,
     `Project: ${project.projectName}`,
     `Repo: ${project.repoPath}`,
     `Remote: ${project.remoteUrl ?? project.remoteStatus}`,
+    workflow ? `Workflow: ${workflow.graph.id} rev ${workflow.revision}` : null,
     "",
     question.text,
     ...question.options.map((option, index) => `${index + 1}. ${option.label} - ${option.description ?? ""}`.trim()),
     question.allowMultiSelect ? "You can pick multiple options or type a custom answer." : "Pick one option or type a custom answer.",
-  ].join("\n");
+  ].filter((line): line is string => line !== null).join("\n");
 }
 
 function readyMessage(plan: AgentFleetPlan): string {
@@ -1130,7 +1239,298 @@ function latestQuestion(messages: OrchestrationMessage[], questionId?: string): 
   return null;
 }
 
-function buildFleetPlan(orchestration: Orchestration, project: Project, messages: OrchestrationMessage[]): AgentFleetPlan {
+function latestWorkflowPatchMetadata(messages: OrchestrationMessage[]): unknown | null {
+  for (const message of [...messages].reverse()) {
+    const metadata = parseJson(message.metadataJson) as { workflowPatch?: unknown } | null;
+    if (metadata?.workflowPatch) return metadata.workflowPatch;
+  }
+  return null;
+}
+
+function workflowMessageMetadata(workflow: PersistedWorkflowGraph): JsonRecord {
+  return {
+    graphId: workflow.id,
+    workflowGraphId: workflow.graph.id,
+    revision: workflow.revision,
+    projectId: workflow.projectId,
+    orchestrationId: workflow.orchestrationId,
+  };
+}
+
+function workflowPlannerPromptContract(workflow: PersistedWorkflowGraph): string {
+  return [
+    "Maintain an evolving semantic WorkflowGraph for this orchestration.",
+    "Respond with concise user-facing planner text.",
+    "When requirements, architecture, risks, questions, tests, deployment, or agent plan semantics change, include exactly one fenced ARC_WORKFLOW_PATCH_JSON block.",
+    `Patch graphId must be ${workflow.graph.id}; baseRevision must be ${workflow.revision}; reason is required.`,
+    "WorkflowPatch operations must be semantic only. Do not include Excalidraw elements, appState, files, coordinates, or canvas shape JSON.",
+    "If user input is ambiguous and the graph should not change yet, ask a question and emit no patch.",
+  ].join("\n");
+}
+
+function appendWorkflowPatchBlock(message: string, patch: WorkflowPatch | null): string {
+  if (!patch) return message;
+  return `${message}\n\n\`\`\`ARC_WORKFLOW_PATCH_JSON\n${stableJson(patch)}\n\`\`\``;
+}
+
+function workflowPatchForPlannerTurn(
+  workflow: PersistedWorkflowGraph,
+  orchestration: Orchestration,
+  latestUser: OrchestrationMessage,
+): WorkflowPatch | null {
+  if (!/https|http api|api server|not p2p|no p2p|server.authoritative/i.test(latestUser.content)) {
+    return null;
+  }
+  return httpsReplacementPatch(workflow.graph, orchestration.id);
+}
+
+function httpsReplacementPatch(graph: WorkflowGraph, orchestrationId: number): WorkflowPatch | null {
+  const now = new Date().toISOString();
+  const operations: WorkflowPatch["operations"] = [];
+  const hasNode = (id: string) => graph.nodes.some((node) => node.id === id);
+  const hasEdge = (id: string) => graph.edges.some((edge) => edge.id === id);
+  const hasDecision = (id: string) => graph.decisions.some((decision) => decision.id === id);
+  const isActiveNode = (id: string) => graph.nodes.some((node) => node.id === id && node.status !== "deprecated");
+  const isActiveDecision = (id: string) => graph.decisions.some((decision) => decision.id === id && decision.status !== "deprecated");
+  const id = (slug: string) => `${slug}-orchestration-${orchestrationId}`;
+  const edgeId = (slug: string) => `edge-${slug}-orchestration-${orchestrationId}`;
+  const replacementId = id("component-https-api-server");
+
+  for (const deprecated of ["decision-p2p-multiplayer", "component-peer-discovery", "component-nat-traversal", "component-host-migration"]) {
+    const nodeId = id(deprecated);
+    if (isActiveNode(nodeId)) {
+      operations.push({
+        op: "mark_deprecated",
+        targetType: "node",
+        targetId: nodeId,
+        reason: "User replaced P2P multiplayer with HTTPS.",
+        replacementId,
+      });
+    }
+  }
+  const p2pDecisionId = id("decision-p2p-multiplayer");
+  if (isActiveDecision(p2pDecisionId)) {
+    operations.push({
+      op: "mark_deprecated",
+      targetType: "decision",
+      targetId: p2pDecisionId,
+      reason: "User replaced P2P multiplayer with HTTPS.",
+      replacementId: id("decision-https-server-authoritative"),
+    });
+  }
+
+  const nodes: WorkflowGraph["nodes"] = [
+    {
+      id: replacementId,
+      kind: "backend_component",
+      status: "active",
+      title: "HTTPS API server",
+      summary: "Server endpoint layer replaces direct P2P connectivity.",
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: id("component-game-rooms"),
+      kind: "backend_component",
+      status: "active",
+      title: "Game rooms",
+      summary: "Tracks multiplayer room creation, membership, and lifecycle.",
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: id("component-server-authoritative-state"),
+      kind: "backend_component",
+      status: "active",
+      title: "Server-authoritative state",
+      summary: "Server validates and broadcasts canonical multiplayer game state.",
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: id("component-sessions-auth"),
+      kind: "backend_component",
+      status: "active",
+      title: "Sessions/auth",
+      summary: "Identifies players and protects room/session operations.",
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: id("component-backend-endpoints"),
+      kind: "backend_component",
+      status: "active",
+      title: "Backend endpoints",
+      summary: "Defines HTTPS routes for rooms, sessions, state updates, and matchmaking.",
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: id("decision-https-server-authoritative"),
+      kind: "decision",
+      status: "active",
+      title: "HTTPS server-authoritative multiplayer",
+      summary: "Use HTTPS APIs and server-owned game state instead of P2P authority.",
+      createdAt: now,
+      updatedAt: now,
+    },
+  ];
+  for (const node of nodes) {
+    if (!hasNode(node.id)) {
+      operations.push({ op: "add_node", node });
+    }
+  }
+  const knownNodeIds = new Set([...graph.nodes.map((node) => node.id), ...nodes.map((node) => node.id)]);
+
+  if (!hasDecision(id("decision-https-server-authoritative"))) {
+    operations.push({
+      op: "replace_decision",
+      decisionId: id("decision-https-server-authoritative"),
+      decision: {
+        id: id("decision-https-server-authoritative"),
+        title: "HTTPS server-authoritative multiplayer",
+        summary: "Replace P2P multiplayer with HTTPS APIs, rooms, authenticated sessions, backend endpoints, and server-owned state.",
+        status: "accepted",
+        nodeId: id("decision-https-server-authoritative"),
+        supersedesDecisionId: hasDecision(p2pDecisionId) ? p2pDecisionId : undefined,
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+  }
+
+  const edges: WorkflowGraph["edges"] = [
+    {
+      id: edgeId("https-api-server-backend-networking"),
+      kind: "implements",
+      fromNodeId: replacementId,
+      toNodeId: id("backend-networking"),
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: edgeId("https-decision-api-server"),
+      kind: "depends_on",
+      fromNodeId: id("decision-https-server-authoritative"),
+      toNodeId: replacementId,
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: edgeId("game-rooms-api-server"),
+      kind: "depends_on",
+      fromNodeId: id("component-game-rooms"),
+      toNodeId: replacementId,
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: edgeId("server-state-game-rooms"),
+      kind: "depends_on",
+      fromNodeId: id("component-server-authoritative-state"),
+      toNodeId: id("component-game-rooms"),
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: edgeId("sessions-auth-api-server"),
+      kind: "depends_on",
+      fromNodeId: id("component-sessions-auth"),
+      toNodeId: replacementId,
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: edgeId("backend-endpoints-api-server"),
+      kind: "contains",
+      fromNodeId: replacementId,
+      toNodeId: id("component-backend-endpoints"),
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    },
+  ];
+  for (const edge of edges) {
+    if (knownNodeIds.has(edge.fromNodeId) && knownNodeIds.has(edge.toNodeId) && !hasEdge(edge.id)) {
+      operations.push({ op: "add_edge", edge });
+    }
+  }
+
+  if (hasNode(id("milestone-testing"))) {
+    operations.push({
+      op: "update_node",
+      nodeId: id("milestone-testing"),
+      changes: {
+        body: "Validate HTTPS API behavior, room lifecycle, server-authoritative state transitions, session/auth flows, and multiplayer regression paths.",
+      },
+    });
+  }
+  if (hasNode(id("milestone-deployment"))) {
+    operations.push({
+      op: "update_node",
+      nodeId: id("milestone-deployment"),
+      changes: {
+        body: "Deployment now needs a backend runtime, HTTPS configuration, session storage assumptions, and endpoint health checks.",
+      },
+    });
+  }
+
+  if (operations.length === 0) {
+    return null;
+  }
+
+  return {
+    id: `patch-replace-p2p-with-https-orchestration-${orchestrationId}-rev-${graph.revision}`,
+    graphId: graph.id,
+    baseRevision: graph.revision,
+    reason: "Replace P2P multiplayer with HTTPS.",
+    author: "planner",
+    createdAt: now,
+    operations,
+  };
+}
+
+function withWorkflowSharedContext(plan: AgentFleetPlan, graph: WorkflowGraph): AgentFleetPlan {
+  const summary = workflowSummary(graph);
+  const baseSharedContext = plan.sharedContext.includes("Current WorkflowGraph:")
+    ? plan.sharedContext.split("\n\nCurrent WorkflowGraph:")[0]
+    : plan.sharedContext;
+  return {
+    ...plan,
+    sharedContext: `${baseSharedContext}\n\nCurrent WorkflowGraph:\n${summary}\n\nChild agents receive this workflow as context only. They must not directly mutate WorkflowGraph in v1 unless routed back through the planner.`,
+  };
+}
+
+function workflowSummary(graph: WorkflowGraph): string {
+  const activeNodes = graph.nodes.filter((node) => node.status !== "deprecated");
+  const deprecatedNodes = graph.nodes.filter((node) => node.status === "deprecated");
+  const lines = [
+    `Graph: ${graph.id} rev ${graph.revision}`,
+    `Goal: ${graph.title}`,
+    "Active nodes:",
+    ...activeNodes.slice(0, 24).map((node) => `- ${node.id} [${node.kind}/${node.status}]: ${node.title}${node.summary ? ` - ${node.summary}` : ""}`),
+  ];
+  if (deprecatedNodes.length) {
+    lines.push("Deprecated nodes:", ...deprecatedNodes.slice(0, 12).map((node) => `- ${node.id}: ${node.title}${node.deprecatedReason ? ` - ${node.deprecatedReason}` : ""}`));
+  }
+  const questions = graph.openQuestions.filter((question) => question.status === "open");
+  if (questions.length) {
+    lines.push("Open questions:", ...questions.slice(0, 8).map((question) => `- ${question.id}: ${question.question}`));
+  }
+  return lines.join("\n");
+}
+
+function buildFleetPlan(
+  orchestration: Orchestration,
+  project: Project,
+  messages: OrchestrationMessage[],
+  workflow?: PersistedWorkflowGraph,
+): AgentFleetPlan {
   const decisions = selectedDecisionLines(messages);
   const maxAgents = Math.max(2, Math.min(10, orchestration.maxAgents));
   const desired = decisions.some((decision) => /dependency|package|upgrade/i.test(decision))
@@ -1167,7 +1567,7 @@ function buildFleetPlan(orchestration: Orchestration, project: Project, messages
       ],
     };
   });
-  return {
+  const plan: AgentFleetPlan = {
     orchestrationGoal: orchestration.goal,
     architectureSummary: `Modernize ${project.projectName} for "${oneLine(orchestration.goal, 100)}" using project-scoped agents working in ${project.repoPath}.`,
     agentCount: agents.length,
@@ -1182,6 +1582,7 @@ function buildFleetPlan(orchestration: Orchestration, project: Project, messages
     integrationStrategy: `Use isolated branches/worktrees for ${project.projectName}; start with repository discovery, then apply narrow modernization changes and run available validation commands.`,
     agents,
   };
+  return workflow ? withWorkflowSharedContext(plan, workflow.graph) : plan;
 }
 
 function selectedDecisionLines(messages: OrchestrationMessage[]): string[] {

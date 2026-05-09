@@ -1,3 +1,5 @@
+import type { ArcPersistedWorkflowGraph } from "./workflows/api";
+
 export type ArcCardMode =
   | "direct_agent"
   | "plan_card_only"
@@ -224,8 +226,20 @@ export interface ArcOrchestrationMessage {
     selectedOptionIds?: string[];
     readySummary?: string;
     plan?: unknown;
+    workflow?: unknown;
+    workflowPatch?: ArcWorkflowPatchStatus;
+    plannerPrompt?: string;
   } | null;
   createdAt: string;
+}
+
+export interface ArcWorkflowPatchStatus {
+  status?: "none" | "applied" | "rejected" | string;
+  patchId?: string;
+  reason?: string;
+  baseRevision?: number;
+  resultingRevision?: number;
+  error?: string;
 }
 
 export interface ArcOrchestrationAgent {
@@ -266,6 +280,8 @@ export interface ArcOrchestration {
     agents?: Array<{ name?: string; role?: string; objective?: string; prompt?: string; acceptanceCriteria?: string[] }>;
   } | null;
   latestQuestion?: ArcPlannerQuestion | null;
+  workflow?: ArcPersistedWorkflowGraph | null;
+  latestWorkflowPatch?: ArcWorkflowPatchStatus | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -318,7 +334,12 @@ export async function submitImplement(message: string, mode: ArcCardMode, projec
   return parseJsonResponse(response);
 }
 
-export async function submitOrchestrate(message: string, projectId: number, x: number, y: number): Promise<{ orchestration: ArcOrchestrationView; card: ArcCard }> {
+export async function submitOrchestrate(
+  message: string,
+  projectId: number,
+  x: number,
+  y: number,
+): Promise<{ orchestration: ArcOrchestrationView; card: ArcCard; workflow?: ArcPersistedWorkflowGraph }> {
   const response = await fetch("/api/orchestrate", {
     method: "POST",
     headers: { "content-type": "application/json" },

@@ -252,7 +252,7 @@ Workflow state is stored in SQLite as project-scoped graph snapshots plus append
 
 `workflow_patches` stores each successfully applied planner patch with its `base_revision`, `resulting_revision`, original semantic `patch_json`, `source`, and `reason`. Patch rows are written in the same transaction as the graph snapshot update.
 
-`WorkflowService.getOrCreateForOrchestration(projectId, orchestrationId, goal)` creates a revision `0` graph with a goal node when no graph exists yet. `WorkflowService.applyPlannerPatch(projectId, orchestrationId, patch)` validates the patch, checks project/orchestration ownership, applies it with `applyWorkflowPatch`, updates the snapshot, and records the patch history.
+`WorkflowService.getOrCreateForOrchestration(projectId, orchestrationId, goal)` creates a revision `0` starter graph when no graph exists yet. The starter graph includes the goal plus initial requirement, decision, frontend/backend, testing, deployment, and open-question nodes. Multiplayer goals also seed P2P-related nodes such as peer discovery, NAT traversal, host migration, and multiplayer synchronization so the planner can explicitly replace or deprecate them later. `WorkflowService.applyPlannerPatch(projectId, orchestrationId, patch)` validates the patch, checks project/orchestration ownership, applies it with `applyWorkflowPatch`, updates the snapshot, and records the patch history.
 
 Stale patch application fails before the graph row is updated. The persistence layer checks both the semantic patch `baseRevision` and the current SQLite `workflow_graphs.revision`.
 
@@ -270,7 +270,7 @@ Routes:
 - `POST /api/workflows/orchestration/:orchestrationId/patch`
 - `GET /api/workflows/events?projectId=...`
 
-`GET /api/workflows/orchestration/:orchestrationId` creates a revision `0` workflow graph for the orchestration when none exists yet. The graph starts with a goal node derived from the orchestration goal. The POST patch route then applies semantic `WorkflowPatch` objects against that graph.
+`GET /api/workflows/orchestration/:orchestrationId` creates a revision `0` workflow graph for the orchestration when none exists yet. The graph starts from the orchestration goal and starter planning nodes. The POST patch route then applies semantic `WorkflowPatch` objects against that graph.
 
 Example create/get:
 
@@ -338,3 +338,84 @@ SSE event names:
 The stream is project-scoped. Subscribers for project `1` do not receive workflow events emitted for project `2`.
 
 The patch route validates semantic workflow patches and rejects stale revisions, project/orchestration mismatches, unstable IDs, and raw Excalidraw scene fields. It does not run shell commands and does not mutate `excalidraw_cards`.
+
+## Planner Integration
+
+When the Excalidraw canvas sends `POST /api/orchestrate`, the server creates the orchestration, creates or loads the orchestration workflow graph, emits `workflow.graph_created` on the project stream, and includes the graph in the orchestration response:
+
+```json
+{
+  "orchestration": {
+    "orchestration": {
+      "id": 12,
+      "workflow": {
+        "id": 7,
+        "projectId": 1,
+        "orchestrationId": 12,
+        "revision": 0,
+        "graph": {
+          "id": "workflow-project-1-orchestration-12",
+          "revision": 0
+        }
+      }
+    }
+  }
+}
+```
+
+Planner messages may include one semantic patch block. The server extracts the newest block, validates it with `WorkflowPatchValidator`, applies it through `WorkflowService`, records patch history, and emits `workflow.patch_applied`. Malformed or stale blocks are recorded in planner message metadata as `workflowPatch.status = "rejected"` and emitted as `workflow.patch_rejected`; the planner loop continues.
+
+Patch block format:
+
+````markdown
+The plan should move networking away from P2P and make the backend authoritative.
+
+```ARC_WORKFLOW_PATCH_JSON
+{
+  "id": "patch-replace-p2p-with-https-orchestration-12-rev-0",
+  "graphId": "workflow-project-1-orchestration-12",
+  "baseRevision": 0,
+  "reason": "Replace P2P multiplayer with HTTPS.",
+  "author": "planner",
+  "createdAt": "2026-05-09T12:40:00.000Z",
+  "operations": [
+    {
+      "op": "mark_deprecated",
+      "targetType": "node",
+      "targetId": "component-peer-discovery-orchestration-12",
+      "reason": "User replaced P2P multiplayer with HTTPS.",
+      "replacementId": "component-https-api-server-orchestration-12"
+    },
+    {
+      "op": "add_node",
+      "node": {
+        "id": "component-https-api-server-orchestration-12",
+        "kind": "backend_component",
+        "status": "active",
+        "title": "HTTPS API server",
+        "summary": "Server endpoint layer replaces direct P2P connectivity.",
+        "createdAt": "2026-05-09T12:40:00.000Z",
+        "updatedAt": "2026-05-09T12:40:00.000Z"
+      }
+    }
+  ]
+}
+```
+````
+
+Planner prompt rules:
+
+- Keep user-facing planner text concise.
+- Include `ARC_WORKFLOW_PATCH_JSON` only when the semantic workflow should change.
+- Always include `graphId`, `baseRevision`, `reason`, `createdAt`, and stable lowercase IDs.
+- Never include raw Excalidraw `elements`, `appState`, `files`, coordinates, or shape JSON.
+- Ask a clarifying question and emit no patch when user input is ambiguous.
+
+Example flow:
+
+1. User starts `/orchestrate ace multiplayer snake game`.
+2. The starter graph includes goal, requirements, architecture decisions, frontend/game loop, backend/networking, multiplayer synchronization, testing, deployment, open questions, and P2P assumptions.
+3. User replies `No not P2P, make it HTTPS`.
+4. The planner patch deprecates P2P multiplayer, peer discovery, NAT traversal, and host migration; adds HTTPS API server, game rooms, server-authoritative state, sessions/auth, and backend endpoints; and updates testing/deployment consequences while preserving unrelated nodes.
+
+When `Spawn Agents` is approved, the current `WorkflowGraph` summary is appended to `AgentFleetPlan.sharedContext`. Child agents receive it as context only; in v1 they do not mutate the workflow graph directly.

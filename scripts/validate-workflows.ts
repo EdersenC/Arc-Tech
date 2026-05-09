@@ -15,6 +15,7 @@ import {
   WorkflowEventBus,
   WorkflowService,
   applyWorkflowPatch,
+  parsePlannerWorkflowPatch,
   validateWorkflowPatch,
   type WorkflowGraph,
   type WorkflowPatch,
@@ -131,6 +132,11 @@ const rawExcalidrawPatch = {
   elements: [{ id: "shape-1", type: "rectangle", x: 10, y: 10, width: 200, height: 120 }],
 };
 assert.equal(validateWorkflowPatch(rawExcalidrawPatch).ok, false);
+assert.equal(
+  parsePlannerWorkflowPatch("Planner text\n```ARC_WORKFLOW_PATCH_JSON\n{\"id\":\n```").status,
+  "rejected",
+  "malformed planner patch blocks should be rejected without throwing",
+);
 
 const stalePatch: WorkflowPatch = { ...replaceP2pPatch, id: "patch-stale", baseRevision: 1 };
 assert.throws(() => applyWorkflowPatch(updated as WorkflowGraph, stalePatch), /baseRevision 1 does not match graph revision 2/);
@@ -176,7 +182,8 @@ try {
     const persisted = service.getOrCreateForOrchestration(projectId, orchestrationId, "Persist workflow graph state");
     events.graphCreated(persisted);
     assert.equal(persisted.revision, 0);
-    assert.equal(persisted.graph.nodes.length, 1);
+    assert.ok(persisted.graph.nodes.some((node) => node.kind === "goal"));
+    assert.ok(persisted.graph.nodes.some((node) => node.kind === "milestone" && /testing/i.test(node.title)));
 
     const servicePatch: WorkflowPatch = {
       id: "patch-add-service-node",
@@ -300,6 +307,41 @@ try {
       );
       assert.equal(history.patches.length, 1);
       assert.equal(history.patches[0].resultingRevision, 1);
+
+      const orchestrated = await fetchJson<{
+        orchestration: { orchestration: { id: number; workflow: { revision: number; graph: WorkflowGraph } | null } };
+        workflow: { revision: number; graph: WorkflowGraph };
+      }>(`${baseUrl}/api/orchestrate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          message: "/orchestrate ace multiplayer snake game",
+          projectId,
+          x: 120,
+          y: 160,
+        }),
+      });
+      assert.equal(orchestrated.workflow.revision, 0);
+      assert.ok(orchestrated.workflow.graph.nodes.some((node) => node.id.includes("decision-p2p-multiplayer")));
+      assert.ok(orchestrated.orchestration.orchestration.workflow);
+
+      const planned = await fetchJson<{
+        orchestration: {
+          workflow: { revision: number; graph: WorkflowGraph } | null;
+          latestWorkflowPatch?: { status?: string; reason?: string; resultingRevision?: number; error?: string } | null;
+        };
+      }>(`${baseUrl}/api/orchestrations/${orchestrated.orchestration.orchestration.id}/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: "No not P2P, make it HTTPS" }),
+      });
+      assert.equal(planned.orchestration.workflow?.revision, 1);
+      assert.equal(planned.orchestration.latestWorkflowPatch?.status, "applied");
+      assert.ok(planned.orchestration.workflow?.graph.nodes.some((node) => node.id.includes("component-https-api-server")));
+      assert.equal(
+        planned.orchestration.workflow?.graph.nodes.find((node) => node.id.includes("component-peer-discovery"))?.status,
+        "deprecated",
+      );
     } finally {
       await server.close().catch(() => undefined);
     }
