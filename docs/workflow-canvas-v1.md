@@ -243,3 +243,17 @@ npm run build
 ```
 
 Validators reject duplicate node IDs, edges that point to missing nodes, stale `baseRevision` values, patches without a `reason`, unstable IDs, and raw Excalidraw scene data inside `WorkflowPatch`.
+
+## Persistence
+
+Workflow state is stored in SQLite as project-scoped graph snapshots plus append-only patch history.
+
+`workflow_graphs` stores the current authoritative `WorkflowGraph` JSON for a project and optional orchestration. The row `revision` must match `graph_json.revision`. There is at most one graph per `(project_id, orchestration_id)` when an orchestration is attached.
+
+`workflow_patches` stores each successfully applied planner patch with its `base_revision`, `resulting_revision`, original semantic `patch_json`, `source`, and `reason`. Patch rows are written in the same transaction as the graph snapshot update.
+
+`WorkflowService.getOrCreateForOrchestration(projectId, orchestrationId, goal)` creates a revision `0` graph with a goal node when no graph exists yet. `WorkflowService.applyPlannerPatch(projectId, orchestrationId, patch)` validates the patch, checks project/orchestration ownership, applies it with `applyWorkflowPatch`, updates the snapshot, and records the patch history.
+
+Stale patch application fails before the graph row is updated. The persistence layer checks both the semantic patch `baseRevision` and the current SQLite `workflow_graphs.revision`.
+
+The persistence service has no Discord, Git, or Excalidraw card dependencies. Canvas cards remain downstream projections and are not mutated by workflow graph persistence.

@@ -1,5 +1,16 @@
 import assert from "node:assert/strict";
-import { applyWorkflowPatch, validateWorkflowPatch, type WorkflowGraph, type WorkflowPatch } from "../src/workflows/index.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { AppDatabase } from "../src/db.js";
+import {
+  WorkflowGraphRepo,
+  WorkflowService,
+  applyWorkflowPatch,
+  validateWorkflowPatch,
+  type WorkflowGraph,
+  type WorkflowPatch,
+} from "../src/workflows/index.js";
 
 const t0 = "2026-05-09T12:00:00.000Z";
 const createPatch: WorkflowPatch = {
@@ -116,4 +127,74 @@ assert.equal(validateWorkflowPatch(rawExcalidrawPatch).ok, false);
 const stalePatch: WorkflowPatch = { ...replaceP2pPatch, id: "patch-stale", baseRevision: 1 };
 assert.throws(() => applyWorkflowPatch(updated as WorkflowGraph, stalePatch), /baseRevision 1 does not match graph revision 2/);
 
-console.log("Workflow domain validation passed.");
+const tmp = mkdtempSync(path.join(tmpdir(), "arc-workflow-validation-"));
+try {
+  const database = new AppDatabase(path.join(tmp, "arc.sqlite"));
+  try {
+    database.db
+      .prepare(
+        `
+        INSERT INTO projects (
+          guild_id,
+          channel_id,
+          project_channel_id,
+          project_channel_name,
+          project_name,
+          project_slug,
+          repo_path,
+          worktrees_path
+        )
+        VALUES ('guild-1', 'channel-1', 'channel-1', 'Workflow Validation', 'Workflow Validation', 'workflow-validation', @repoPath, @worktreesPath)
+      `,
+      )
+      .run({ repoPath: path.join(tmp, "repo"), worktreesPath: path.join(tmp, "worktrees") });
+    const projectId = Number(database.db.prepare("SELECT id FROM projects LIMIT 1").pluck().get());
+    const orchestrationResult = database.db
+      .prepare(
+        `
+        INSERT INTO orchestrations (project_id, author_user_id, status, goal)
+        VALUES (?, 'validator', 'PLANNING', 'Persist workflow graph state')
+      `,
+      )
+      .run(projectId);
+    const orchestrationId = Number(orchestrationResult.lastInsertRowid);
+
+    const repo = new WorkflowGraphRepo(database.db);
+    const service = new WorkflowService(repo);
+    const persisted = service.getOrCreateForOrchestration(projectId, orchestrationId, "Persist workflow graph state");
+    assert.equal(persisted.revision, 0);
+    assert.equal(persisted.graph.nodes.length, 1);
+
+    const servicePatch: WorkflowPatch = {
+      id: "patch-add-service-node",
+      graphId: persisted.graph.id,
+      baseRevision: 0,
+      reason: "Add service layer node.",
+      author: "planner",
+      createdAt: "2026-05-09T12:20:00.000Z",
+      operations: [
+        {
+          op: "add_node",
+          node: {
+            id: "component-workflow-service",
+            kind: "backend_component",
+            status: "active",
+            title: "WorkflowService",
+            createdAt: "2026-05-09T12:20:00.000Z",
+            updatedAt: "2026-05-09T12:20:00.000Z",
+          },
+        },
+      ],
+    };
+    const saved = service.applyPlannerPatch(projectId, orchestrationId, servicePatch);
+    assert.equal(saved.revision, 1);
+    assert.equal(service.listGraphHistory(saved.id).length, 1);
+    assert.throws(() => service.applyPlannerPatch(projectId, orchestrationId, servicePatch), /stale|baseRevision/i);
+  } finally {
+    database.close();
+  }
+} finally {
+  rmSync(tmp, { recursive: true, force: true });
+}
+
+console.log("Workflow domain and persistence validation passed.");
