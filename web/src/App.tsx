@@ -86,6 +86,7 @@ export default function App() {
   const selectedCardIdRef = useRef<string | null>(null);
   const selectedWorkflowNodeIdRef = useRef<string | null>(null);
   const workflowGraphRef = useRef<ArcPersistedWorkflowGraph | null>(null);
+  const workflowElementIdsRef = useRef<Set<string>>(new Set());
   const selectedTaskIdRef = useRef<number | null>(initialTaskId());
   const selectedOrchestrationIdRef = useRef<number | null>(null);
   const initialDeepLinkTaskIdRef = useRef<number | null>(selectedTaskIdRef.current);
@@ -151,16 +152,17 @@ export default function App() {
     if (selectedWorkflowNodeIdRef.current) {
       setSelectedWorkflowNode(workflow?.graph.nodes.find((node) => node.id === selectedWorkflowNodeIdRef.current) ?? null);
     }
-    const api = excalidrawApiRef.current;
-    if (!api) return;
-    const current = api.getSceneElements();
-    const nonWorkflowElements = current.filter((element) => !isWorkflowElement(element));
     const workflowElements = workflow
       ? graphToExcalidrawElements(workflow.graph, {
           persisted: workflow,
           avoidRects: cardsRef.current.map((card) => ({ x: card.x, y: card.y, width: card.width, height: card.height })),
         })
       : [];
+    workflowElementIdsRef.current = new Set(workflowElements.map((element) => element.id));
+    const api = excalidrawApiRef.current;
+    if (!api) return;
+    const current = api.getSceneElements();
+    const nonWorkflowElements = current.filter((element) => !isWorkflowElement(element));
     sceneApplyUntilRef.current = Date.now() + 250;
     api.updateScene({ elements: [...nonWorkflowElements, ...workflowElements] });
   }, []);
@@ -201,6 +203,7 @@ export default function App() {
       window.localStorage.setItem(ACTIVE_PROJECT_KEY, String(projectId));
       cardsRef.current = [];
       workflowGraphRef.current = null;
+      workflowElementIdsRef.current = new Set();
       setCards([]);
       setSelectedCard(null);
       setSelectedWorkflowNode(null);
@@ -542,7 +545,7 @@ export default function App() {
       }
     }
     const workflow = workflowGraphRef.current;
-    if (workflow && workflowLayerNeedsRestore(elements, workflow, cardsRef.current)) {
+    if (workflow && workflowLayerNeedsRestore(elements, workflowElementIdsRef.current)) {
       applyWorkflowToScene(workflow);
     }
     const updates = changedCardPositions(elements, cardsRef.current);
@@ -760,7 +763,7 @@ function OrchestrationSidebar(props: {
   const question = orchestration.latestQuestion;
   const canSpawn = orchestrationReadyForSpawn(orchestration.status);
   const canPreparePlan = orchestrationCanPreparePlan(orchestration.status);
-  const canAnswerQuestion = ["waiting_for_user_choice", "asking_questions", "refining_plan", "draft_created"].includes(orchestration.status);
+  const canAnswerQuestion = ["WAITING_USER", "waiting_for_user_choice", "asking_questions", "refining_plan", "draft_created"].includes(orchestration.status);
   const workflowPatch = orchestration.latestWorkflowPatch;
   return (
     <aside className="task-sidebar orchestration-sidebar">
@@ -1252,13 +1255,7 @@ function isArcManagedElement(element: ArcElement): boolean {
   return isArcCardElement(element) || isWorkflowElement(element);
 }
 
-function workflowLayerNeedsRestore(elements: readonly ArcElement[], workflow: ArcPersistedWorkflowGraph, cards: ArcCard[]): boolean {
-  const expectedIds = new Set(
-    graphToExcalidrawElements(workflow.graph, {
-      persisted: workflow,
-      avoidRects: cards.map((card) => ({ x: card.x, y: card.y, width: card.width, height: card.height })),
-    }).map((element) => element.id),
-  );
+function workflowLayerNeedsRestore(elements: readonly ArcElement[], expectedIds: ReadonlySet<string>): boolean {
   const actualIds = new Set(elements.filter(isWorkflowElement).map((element) => element.id));
   if (actualIds.size !== expectedIds.size) {
     return true;
