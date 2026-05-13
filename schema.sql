@@ -259,3 +259,61 @@ CREATE TABLE IF NOT EXISTS excalidraw_cards (
 
 CREATE INDEX IF NOT EXISTS idx_excalidraw_cards_task ON excalidraw_cards(task_id);
 CREATE INDEX IF NOT EXISTS idx_excalidraw_cards_project ON excalidraw_cards(project_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS canvas_prompt_nodes (
+  id TEXT PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  owner_id TEXT NOT NULL,
+  owner_label TEXT NOT NULL,
+  command_kind TEXT NOT NULL,
+  command_text TEXT NOT NULL,
+  body TEXT NOT NULL DEFAULT '',
+  x REAL NOT NULL DEFAULT 80,
+  y REAL NOT NULL DEFAULT 80,
+  width REAL NOT NULL DEFAULT 460,
+  height REAL NOT NULL DEFAULT 190,
+  status TEXT NOT NULL DEFAULT 'draft',
+  last_dispatch_hash TEXT,
+  last_dispatched_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  deleted_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_canvas_prompt_nodes_project ON canvas_prompt_nodes(project_id, deleted_at, updated_at);
+CREATE INDEX IF NOT EXISTS idx_canvas_prompt_nodes_owner ON canvas_prompt_nodes(owner_id, project_id);
+
+CREATE TABLE IF NOT EXISTS canvas_prompt_links (
+  id TEXT PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  prompt_node_id TEXT NOT NULL REFERENCES canvas_prompt_nodes(id) ON DELETE CASCADE,
+  link_kind TEXT NOT NULL DEFAULT 'workflow_dispatch',
+  owner_id TEXT NOT NULL,
+  source_kind TEXT,
+  source_id TEXT,
+  target_kind TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  orchestration_id INTEGER,
+  question_id TEXT,
+  workflow_graph_id TEXT,
+  workflow_node_id TEXT,
+  task_id INTEGER,
+  card_id TEXT,
+  target_orchestration_id INTEGER,
+  target_workflow_graph_id TEXT,
+  target_workflow_node_id TEXT,
+  arrow_element_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'linked',
+  dispatch_hash TEXT,
+  dispatched_at TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  deleted_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_canvas_prompt_links_project ON canvas_prompt_links(project_id, deleted_at, updated_at);
+CREATE INDEX IF NOT EXISTS idx_canvas_prompt_links_prompt ON canvas_prompt_links(prompt_node_id, deleted_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_canvas_prompt_links_one_active_workflow_target
+  ON canvas_prompt_links(prompt_node_id)
+  WHERE deleted_at IS NULL AND link_kind IN ('workflow_dispatch', 'plan_control');

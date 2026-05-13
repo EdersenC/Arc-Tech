@@ -1,6 +1,7 @@
 import { Client } from "discord.js";
 import { CodexCliRunner } from "./codexRunner.js";
 import { CodexEventRouter } from "./codex/CodexEventRouter.js";
+import { CanvasPromptRepo } from "./canvas-prompts/CanvasPromptRepo.js";
 import { loadConfig } from "./config.js";
 import { AppDatabase } from "./db.js";
 import { ExcalidrawApiServer } from "./excalidraw/ExcalidrawApiServer.js";
@@ -29,6 +30,7 @@ const database = new AppDatabase(config.databasePath);
 const projects = new ProjectStore(database.db, config.excalidrawWorkspacesDir);
 const tasks = new TaskStore(database.db);
 const cards = new ExcalidrawCardsRepo(database.db);
+const canvasPrompts = new CanvasPromptRepo(database.db);
 const orchestrations = new OrchestrationsRepo(database.db);
 const orchestrationAgents = new OrchestrationAgentsRepo(database.db);
 const orchestrationMessages = new OrchestrationMessagesRepo(database.db);
@@ -64,6 +66,7 @@ const server = new ExcalidrawApiServer({
   tasks,
   implementService,
   cards,
+  canvasPrompts,
   feedback: pullRequestFeedback,
   prFeedbackWorker: pullRequestFeedbackWorker,
   orchestrations,

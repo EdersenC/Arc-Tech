@@ -83,7 +83,7 @@ textarea {
 .project-create button,
 .sidebar-header button,
 .chat-panel button,
-.canvas-command-dock button {
+.canvas-prompt-toolbar button {
   min-height: 36px;
   border: 0;
   border-radius: 6px;
@@ -93,7 +93,8 @@ textarea {
 
 .project-create input,
 .project-selector select,
-.composer-command-select select {
+.composer-command-select select,
+.toolbar-command-select select {
   width: 100%;
   min-width: 0;
   min-height: 40px;
@@ -122,7 +123,8 @@ textarea {
 .project-create input:focus,
 .project-selector select:focus,
 .chat-panel textarea:focus,
-.composer-command-select select:focus {
+.composer-command-select select:focus,
+.toolbar-command-select select:focus {
   border-color: #2563eb;
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.24);
 }
@@ -137,7 +139,7 @@ textarea {
 .connect-button:disabled,
 .project-create button:disabled,
 .chat-panel button:disabled,
-.canvas-command-dock button:disabled {
+.canvas-prompt-toolbar button:disabled {
   cursor: default;
   opacity: 0.65;
 }
@@ -228,21 +230,36 @@ textarea {
   min-height: 0;
 }
 
-.canvas-command-dock {
+.canvas-prompt-toolbar {
   position: absolute;
-  right: 18px;
-  bottom: 18px;
+  top: 18px;
   left: 18px;
   z-index: 3;
-  display: grid;
+  display: flex;
   gap: 8px;
-  max-width: 760px;
-  margin: 0 auto;
+  align-items: center;
+  max-width: min(760px, calc(100% - 36px));
   border: 1px solid #334155;
   border-radius: 8px;
   padding: 10px;
   background: rgba(17, 24, 39, 0.96);
   box-shadow: 0 18px 42px rgba(0, 0, 0, 0.44);
+}
+
+.canvas-prompt-toolbar .status-strip {
+  max-width: 520px;
+}
+
+.toolbar-command-select {
+  display: grid;
+  gap: 3px;
+  width: 150px;
+}
+
+.toolbar-command-select span {
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 650;
 }
 
 .composer-row,
@@ -681,6 +698,10 @@ code {
   .status-strip {
     grid-column: 1 / -1;
   }
+
+  .canvas-prompt-toolbar {
+    flex-wrap: wrap;
+  }
 }
 
 @media (max-width: 560px) {
@@ -693,12 +714,6 @@ code {
   .project-create,
   .arc-shell.with-sidebar .workspace-row {
     grid-template-columns: 1fr;
-  }
-
-  .canvas-command-dock {
-    right: 10px;
-    bottom: 10px;
-    left: 10px;
   }
 
   .composer-row,

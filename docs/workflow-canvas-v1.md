@@ -4,6 +4,16 @@ The workflow graph is the source of truth. Excalidraw is only the visual project
 
 In v1, users do not directly edit the workflow graph on the canvas. Only model/planner-produced `WorkflowPatch` objects mutate the graph. Canvas elements may move, but raw Excalidraw element data must not be stored in or applied as a workflow patch.
 
+## Canvas Prompt Boxes
+
+User-authored canvas prompts are persisted outside `WorkflowGraph` in `canvas_prompt_nodes` and `canvas_prompt_links`. They are Arc-Tech-owned Excalidraw elements with `customData.arcPrompt`, not workflow nodes and not task-card metadata.
+
+Prompt boxes support `/orchestrate`, `/implement`, `/plan`, `/answer`, and aliases such as `/orch`, `/agent`, `/plan-card`, and `/question-reply`. The UI stores a soft local `ownerId`/`ownerLabel` for display only; it is not a security boundary without real auth.
+
+Prompt arrows are also tracked outside the workflow graph. When a bound arrow connects a prompt box to a workflow node, open question, task card, or orchestration parent card, the client normalizes the semantic direction as prompt source to workflow/card target and dispatches immediately. The server computes a dispatch hash from the prompt, link, target, command, and prompt text so reconnects do not duplicate sends. Editing a sent prompt marks it dirty and permits one new dispatch hash.
+
+Sent prompts and sent prompt arrows stay visible as historical workflow context. Draft and failed prompts can be deleted; deleting prompt objects never deletes workflow graph history, orchestration messages, generated task cards, or task history.
+
 ## Example Graph
 
 ```json

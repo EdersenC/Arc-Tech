@@ -1,6 +1,9 @@
 import fs from "node:fs/promises";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
+import { canvasPromptDispatchHash, type CanvasPromptRepo } from "../canvas-prompts/CanvasPromptRepo.js";
+import { canonicalPromptCommand, normalizePromptCommand, parsePromptText } from "../canvas-prompts/commandParser.js";
+import type { CanvasPromptCommandKind, CanvasPromptLink, CanvasPromptLinkKind, CanvasPromptNode, CanvasPromptTargetKind } from "../canvas-prompts/types.js";
 import type { AppConfig } from "../config.js";
 import type { PullRequestFeedbackRepo } from "../github/PullRequestFeedbackRepo.js";
 import type { PullRequestFeedbackWorker } from "../github/PullRequestFeedbackWorker.js";
@@ -50,6 +53,7 @@ interface ApiDeps {
   tasks: TaskStore;
   implementService: ImplementService;
   cards: ExcalidrawCardsRepo;
+  canvasPrompts: CanvasPromptRepo;
   feedback?: PullRequestFeedbackRepo;
   prFeedbackWorker?: Pick<PullRequestFeedbackWorker, "resumeAndPoll">;
   orchestrations: OrchestrationsRepo;
@@ -195,6 +199,43 @@ export class ExcalidrawApiServer {
     }
     if (url.pathname === "/api/workflows/events" && req.method === "GET") {
       await this.handleWorkflowEvents(url, req, res);
+      return;
+    }
+    const canvasPromptsProjectMatch = /^\/api\/projects\/(\d+)\/canvas-prompts$/.exec(url.pathname);
+    if (canvasPromptsProjectMatch && req.method === "GET") {
+      await this.handleListCanvasPrompts(Number(canvasPromptsProjectMatch[1]), res);
+      return;
+    }
+    if (canvasPromptsProjectMatch && req.method === "POST") {
+      await this.handleCreateCanvasPrompt(Number(canvasPromptsProjectMatch[1]), req, res);
+      return;
+    }
+    const canvasPromptMatch = /^\/api\/canvas-prompts\/([^/]+)$/.exec(url.pathname);
+    if (canvasPromptMatch && req.method === "PATCH") {
+      await this.handleUpdateCanvasPrompt(decodeURIComponent(canvasPromptMatch[1]), req, res);
+      return;
+    }
+    if (canvasPromptMatch && req.method === "DELETE") {
+      await this.handleDeleteCanvasPrompt(decodeURIComponent(canvasPromptMatch[1]), res);
+      return;
+    }
+    const canvasPromptLinksProjectMatch = /^\/api\/projects\/(\d+)\/canvas-prompt-links$/.exec(url.pathname);
+    if (canvasPromptLinksProjectMatch && req.method === "POST") {
+      await this.handleCreateCanvasPromptLink(Number(canvasPromptLinksProjectMatch[1]), req, res);
+      return;
+    }
+    const canvasPromptLinkMatch = /^\/api\/canvas-prompt-links\/([^/]+)$/.exec(url.pathname);
+    if (canvasPromptLinkMatch && req.method === "DELETE") {
+      await this.handleDeleteCanvasPromptLink(decodeURIComponent(canvasPromptLinkMatch[1]), res);
+      return;
+    }
+    const canvasPromptDispatchMatch = /^\/api\/canvas-prompt-links\/([^/]+)\/dispatch$/.exec(url.pathname);
+    if (canvasPromptDispatchMatch && req.method === "POST") {
+      await this.handleDispatchCanvasPromptLink(decodeURIComponent(canvasPromptDispatchMatch[1]), res);
+      return;
+    }
+    if (url.pathname === "/api/canvas-debug-events" && req.method === "POST") {
+      await this.handleCanvasDebugEvent(req, res);
       return;
     }
     if (url.pathname === "/api/excalidraw/projects" && req.method === "GET") {
@@ -764,6 +805,637 @@ export class ExcalidrawApiServer {
     if (current) {
       this.deps.workflowEvents.snapshot(current);
     }
+  }
+
+  private async handleListCanvasPrompts(projectId: number, res: ServerResponse): Promise<void> {
+    const project = this.requireExcalidrawProject(projectId);
+    this.sendJson(res, 200, this.deps.canvasPrompts.listByProject(project.id));
+  }
+
+  private async handleCreateCanvasPrompt(projectId: number, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const project = this.requireExcalidrawProject(projectId);
+    const body = await readJson(req);
+    const commandKind = normalizePromptCommand(stringField(body, "commandKind", "orchestrate"));
+    const prompt = this.deps.canvasPrompts.createPrompt({
+      projectId: project.id,
+      ownerId: stringField(body, "ownerId", "local-user"),
+      ownerLabel: stringField(body, "ownerLabel", "Local user"),
+      commandKind,
+      commandText: stringField(body, "commandText", canonicalPromptCommand(commandKind)),
+      body: stringField(body, "body", ""),
+      x: numberField(body, "x") ?? nextCardX(Date.now()),
+      y: numberField(body, "y") ?? nextCardY(Date.now()),
+      width: numberField(body, "width") ?? 460,
+      height: numberField(body, "height") ?? 190,
+      status: "draft",
+    });
+    this.sendJson(res, 201, { prompt });
+  }
+
+  private async handleUpdateCanvasPrompt(promptId: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const body = await readJson(req);
+    const parsed = parsePromptText(stringField(body, "text", ""), normalizePromptCommand(stringField(body, "commandKind", "orchestrate")));
+    const hasText = typeof body.text === "string";
+    const rawCommandKind = optionalStringField(body, "commandKind");
+    const commandKind = hasText ? parsed.commandKind : rawCommandKind ? normalizePromptCommand(rawCommandKind) : undefined;
+    const prompt = this.deps.canvasPrompts.updatePrompt(promptId, {
+      ownerId: optionalStringField(body, "ownerId"),
+      ownerLabel: optionalStringField(body, "ownerLabel"),
+      commandKind,
+      commandText: hasText ? parsed.commandText : optionalStringField(body, "commandText"),
+      body: hasText ? parsed.body : optionalStringField(body, "body"),
+      x: numberField(body, "x"),
+      y: numberField(body, "y"),
+      width: numberField(body, "width"),
+      height: numberField(body, "height"),
+    });
+    if (!prompt) {
+      this.sendJson(res, 404, { error: `Canvas prompt ${promptId} not found.` });
+      return;
+    }
+    this.sendJson(res, 200, { prompt });
+  }
+
+  private async handleDeleteCanvasPrompt(promptId: string, res: ServerResponse): Promise<void> {
+    const result = this.deps.canvasPrompts.deletePrompt(promptId);
+    if (result.locked) {
+      this.sendJson(res, 409, { error: "Sent prompt boxes are kept as historical workflow context." });
+      return;
+    }
+    this.sendJson(res, result.deleted ? 200 : 404, { deleted: result.deleted });
+  }
+
+  private async handleCreateCanvasPromptLink(projectId: number, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const project = this.requireExcalidrawProject(projectId);
+    const body = await readJson(req);
+    console.info("Canvas prompt link create requested.", {
+      projectId: project.id,
+      promptNodeId: stringField(body, "promptNodeId"),
+      targetKind: targetKindField(body, "targetKind"),
+      targetId: stringField(body, "targetId"),
+      linkKind: optionalStringField(body, "linkKind") ?? null,
+      workflowNodeId: optionalStringField(body, "workflowNodeId") ?? optionalStringField(body, "targetWorkflowNodeId") ?? null,
+      arrowElementId: optionalStringField(body, "arrowElementId") ?? null,
+    });
+    const link = this.deps.canvasPrompts.createLink({
+      projectId: project.id,
+      promptNodeId: stringField(body, "promptNodeId"),
+      ownerId: stringField(body, "ownerId", "local-user"),
+      linkKind: linkKindField(body, "linkKind"),
+      sourceKind: optionalStringField(body, "sourceKind") ?? null,
+      sourceId: optionalStringField(body, "sourceId") ?? null,
+      targetKind: targetKindField(body, "targetKind"),
+      targetId: stringField(body, "targetId"),
+      orchestrationId: numberField(body, "orchestrationId") ?? numberField(body, "targetOrchestrationId"),
+      questionId: optionalStringField(body, "questionId") ?? null,
+      workflowGraphId: optionalStringField(body, "workflowGraphId") ?? optionalStringField(body, "targetWorkflowGraphId") ?? null,
+      workflowNodeId: optionalStringField(body, "workflowNodeId") ?? optionalStringField(body, "targetWorkflowNodeId") ?? null,
+      taskId: numberField(body, "taskId"),
+      cardId: optionalStringField(body, "cardId") ?? null,
+      arrowElementId: optionalStringField(body, "arrowElementId") ?? undefined,
+    });
+    this.sendJson(res, 201, { link });
+  }
+
+  private async handleDeleteCanvasPromptLink(linkId: string, res: ServerResponse): Promise<void> {
+    const result = this.deps.canvasPrompts.deleteLink(linkId);
+    if (result.locked) {
+      this.sendJson(res, 409, { error: "Sent prompt arrows are kept as historical workflow context." });
+      return;
+    }
+    this.sendJson(res, result.deleted ? 200 : 404, { deleted: result.deleted });
+  }
+
+  private async handleDispatchCanvasPromptLink(linkId: string, res: ServerResponse): Promise<void> {
+    const link = this.deps.canvasPrompts.findLink(linkId);
+    if (!link) {
+      this.sendJson(res, 404, { error: `Canvas prompt link ${linkId} not found.` });
+      return;
+    }
+    const prompt = this.deps.canvasPrompts.findPrompt(link.promptNodeId);
+    if (!prompt) {
+      this.sendJson(res, 404, { error: `Canvas prompt ${link.promptNodeId} not found.` });
+      return;
+    }
+    const dispatchHash = canvasPromptDispatchHash(prompt, link);
+    console.info("Canvas prompt dispatch requested.", {
+      linkId: link.id,
+      promptNodeId: prompt.id,
+      commandKind: prompt.commandKind,
+      linkKind: link.linkKind,
+      promptStatus: prompt.status,
+      linkStatus: link.status,
+      targetKind: link.targetKind,
+      targetId: link.targetId,
+      workflowNodeId: link.workflowNodeId,
+      questionId: link.questionId,
+      orchestrationId: link.orchestrationId,
+      arrowElementId: link.arrowElementId,
+      dispatchHash,
+    });
+    if (link.dispatchHash === dispatchHash && prompt.lastDispatchHash === dispatchHash) {
+      this.sendJson(res, 409, { error: "Prompt already sent; edit it to send again.", prompt, link });
+      return;
+    }
+
+    this.deps.canvasPrompts.markSending(link.id);
+    try {
+      const dispatch = await this.dispatchCanvasPrompt(prompt, link, dispatchHash);
+      const completionDeferred = dispatch.deferDispatchCompletion === true;
+      const waitingForBody = dispatch.kind === "waiting_for_body";
+      const responseLink = completionDeferred
+        ? this.deps.canvasPrompts.findLink(link.id)
+        : waitingForBody
+          ? this.deps.canvasPrompts.findLink(link.id)
+        : this.deps.canvasPrompts.markDispatchSent(link.id, dispatchHash);
+      console.info(
+        completionDeferred
+          ? "Canvas prompt dispatch accepted; orchestration flow is running."
+          : waitingForBody
+            ? "Canvas prompt dispatch deferred until body is entered."
+            : "Canvas prompt dispatch completed.",
+        {
+        linkId: link.id,
+        promptNodeId: prompt.id,
+        targetKind: link.targetKind,
+        targetId: link.targetId,
+        deferred: completionDeferred,
+        },
+      );
+      delete dispatch.deferDispatchCompletion;
+      this.sendJson(res, 202, {
+        ...dispatch,
+        prompt: this.deps.canvasPrompts.findPrompt(prompt.id),
+        link: responseLink,
+      });
+    } catch (error) {
+      const failedLink = this.deps.canvasPrompts.markDispatchFailed(link.id, error instanceof Error ? error.message : String(error));
+      console.error("Canvas prompt dispatch failed.", {
+        linkId: link.id,
+        promptNodeId: prompt.id,
+        targetKind: link.targetKind,
+        targetId: link.targetId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw Object.assign(error instanceof Error ? error : new Error(String(error)), { failedLink });
+    }
+  }
+
+  private async handleCanvasDebugEvent(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const body = await readJson(req);
+    if (body.event === "prompt_arrow_dispatch_triggered" || body.event === "canvas_prompt_dispatch_start") {
+      console.info("Canvas prompt dispatch start accepted by frontend.", body);
+    }
+    this.sendJson(res, 202, { logged: true });
+  }
+
+  private async dispatchCanvasPrompt(
+    prompt: CanvasPromptNode,
+    link: CanvasPromptLink,
+    dispatchHash: string,
+  ): Promise<JsonRecord> {
+    const body = prompt.body.trim();
+    if (!body) {
+      const waitingLink = this.deps.canvasPrompts.markWaitingForBody(link.id);
+      console.info("Canvas prompt dispatch waiting for body.", {
+        linkId: link.id,
+        promptNodeId: prompt.id,
+        commandKind: prompt.commandKind,
+        targetKind: link.targetKind,
+        targetId: link.targetId,
+      });
+      return {
+        kind: "waiting_for_body",
+        prompt: this.deps.canvasPrompts.findPrompt(prompt.id),
+        link: waitingLink,
+      };
+    }
+    if (!isSupportedPromptTarget(link.targetKind)) {
+      throw new Error("Connect this prompt to a workflow node, goal, open question, or task card.");
+    }
+    if (prompt.commandKind === "answer") {
+      return this.dispatchQuestionPrompt(prompt, link, body);
+    }
+    if (prompt.commandKind === "continue_planning") {
+      return this.dispatchOrchestratePrompt(prompt, link, body, dispatchHash);
+    }
+    if (prompt.commandKind === "remake_plan") {
+      return this.dispatchRemakePlanPrompt(prompt, link, body);
+    }
+    if (prompt.commandKind === "start_work") {
+      return this.dispatchStartWorkPrompt(prompt, link, body);
+    }
+    if (prompt.commandKind === "plan") {
+      return this.dispatchPlanPrompt(prompt, link, body);
+    }
+    if (prompt.commandKind === "implement") {
+      return this.dispatchImplementPrompt(prompt, link, body);
+    }
+    return this.dispatchOrchestratePrompt(prompt, link, body, dispatchHash);
+  }
+
+  private async dispatchQuestionPrompt(prompt: CanvasPromptNode, link: CanvasPromptLink, body: string): Promise<JsonRecord> {
+    const orchestrationId = link.orchestrationId;
+    const questionId = link.questionId ?? link.workflowNodeId ?? link.targetId;
+    if (!orchestrationId || link.targetKind !== "open_question") {
+      throw new Error("Connect this prompt to an open question node.");
+    }
+    const messages = this.deps.orchestrationMessages.listByOrchestrationId(orchestrationId);
+    const workflow = this.deps.workflows.getCurrentGraphForOrchestration(orchestrationId);
+    const question = orchestrationQuestions(messages, workflow).find((candidate) => candidate.id === questionId || candidate.workflowNodeId === questionId);
+    const selectedOptionIds = matchingQuestionOptionIds(body, question?.options ?? []);
+    const updated = this.saveQuestionAnswer(orchestrationId, questionId, {
+      selectedOptionIds,
+      customText: selectedOptionIds.length ? undefined : body,
+      content: body,
+    });
+    return { kind: "question_answer", orchestration: this.orchestrationView(updated) };
+  }
+
+  private async dispatchRemakePlanPrompt(prompt: CanvasPromptNode, link: CanvasPromptLink, body: string): Promise<JsonRecord> {
+    if (!link.orchestrationId) {
+      throw new Error("This target has no orchestration to continue from.");
+    }
+    const orchestration = this.requireOrchestration(link.orchestrationId);
+    const project = requireValue(this.deps.projects.getById(orchestration.projectId), `Project #${orchestration.projectId} not found.`);
+    this.deps.orchestrations.clearFinalPlan(orchestration.id, "refining_plan");
+    const messages = this.deps.orchestrationMessages.listByOrchestrationId(orchestration.id);
+    const workflow = this.deps.workflows.getCurrentGraphForOrchestration(orchestration.id);
+    const content = [
+      savedAnswersPlannerPrompt(orchestration, orchestrationQuestions(messages, workflow)),
+      "Remake the AgentFleetPlan from scratch using this canvas prompt as rationale.",
+      scopedCanvasPromptBody(body, link),
+    ].join("\n\n");
+    this.deps.orchestrationMessages.create(orchestration.id, "user", content, {
+      authorUserId: prompt.ownerId,
+      metadata: canvasPromptMetadata(prompt, link, "", "plan_remake_request"),
+    });
+    const plan = await this.ensureFleetPlan(orchestration.id, project);
+    const ready = this.deps.orchestrations.updateStatus(orchestration.id, "ready_for_approval");
+    this.deps.orchestrationMessages.create(orchestration.id, "system", "AgentFleetPlan was remade from a canvas prompt and is ready for review.", {
+      metadata: { kind: "ready_for_approval", readySummary: plan.architectureSummary, plan },
+    });
+    this.refreshParentOrchestrationCard(ready, readyMessage(plan), "ready");
+    return { kind: "remake_plan", orchestration: this.orchestrationView(ready) };
+  }
+
+  private async dispatchStartWorkPrompt(prompt: CanvasPromptNode, link: CanvasPromptLink, body: string): Promise<JsonRecord> {
+    if (!link.orchestrationId) {
+      throw new Error("This target has no orchestration to continue from.");
+    }
+    const initial = this.requireOrchestration(link.orchestrationId);
+    const project = await this.getSyncedExcalidrawProject(requireValue(this.deps.projects.getById(initial.projectId), "Project not found."));
+    const workflow = this.deps.workflows.getCurrentGraphForOrchestration(initial.id);
+    const unanswered = workflow?.graph.openQuestions.filter((question) => question.status === "open") ?? [];
+    if (unanswered.length) {
+      throw new Error(`Answer the current question batch before preparing the plan. ${unanswered.length} question${unanswered.length === 1 ? "" : "s"} still open.`);
+    }
+    const projectView = this.projectView(project);
+    if (!projectView.prReady) {
+      throw new Error(projectView.blockers.join(" "));
+    }
+    const plan = await this.ensureFleetPlan(initial.id, project);
+    const current = this.requireOrchestration(initial.id);
+    this.deps.orchestrations.updateStatus(initial.id, "spawning_agents");
+    this.deps.orchestrationMessages.create(initial.id, "user", scopedCanvasPromptBody(body, link), {
+      authorUserId: prompt.ownerId,
+      metadata: canvasPromptMetadata(prompt, link, "", "start_work_request"),
+    });
+    const parentCard = current.parentCardId ? this.deps.cards.findById(current.parentCardId) : null;
+    const group = groupLayout(
+      parentCard?.x ?? prompt.x + prompt.width + 80,
+      parentCard?.y ?? prompt.y,
+      plan.agentCount,
+    );
+    const container = parentCard
+      ? requireValue(
+          this.deps.cards.updateText(parentCard.id, {
+            title: group.title,
+            label: orchestrationBorderLabel(current, project, plan),
+            status: "running",
+            width: group.width,
+            height: group.height,
+            metadata: {
+              ...(parentCard.metadata ?? {}),
+              type: "orchestration_parent",
+              cardType: "orchestration_parent",
+              orchestrationId: initial.id,
+              projectId: project.id,
+              goal: current.goal,
+              status: "running",
+              planSummary: plan.architectureSummary,
+            },
+          }),
+          `Parent orchestration card ${parentCard.id} not found.`,
+        )
+      : this.deps.cards.createPlanCard({
+          projectId: project.id,
+          command: `/orchestrate ${current.goal}`,
+          title: group.title,
+          label: orchestrationBorderLabel(current, project, plan),
+          mode: "orchestration_parent",
+          status: "running",
+          x: group.x,
+          y: group.y,
+          width: group.width,
+          height: group.height,
+          metadata: {
+            type: "orchestration_parent",
+            orchestrationId: initial.id,
+            projectId: project.id,
+            goal: current.goal,
+            status: "running",
+            planSummary: plan.architectureSummary,
+          },
+        });
+    this.deps.orchestrations.updateCardIds(initial.id, container.id, container.id);
+    const plannedAgents = this.deps.orchestrationAgents.createMany(initial.id, plan.agents);
+    const cards: ExcalidrawCard[] = [container];
+    for (const agent of plannedAgents) {
+      const planAgent = plan.agents[agent.agentIndex - 1];
+      if (!planAgent) continue;
+      const branchName = `codex/orch-${initial.id}-agent-${String(agent.agentIndex).padStart(2, "0")}-${slugify(agent.agentName)}`;
+      const worktreeName = `orch-${initial.id}-agent-${agent.agentIndex}-${slugify(agent.agentName)}`;
+      const childPrompt = childAgentPrompt(current, plan, planAgent, agent.agentIndex, branchName);
+      const position = childCardPosition(group, agent.agentIndex);
+      const result = await this.deps.implementService.run({
+        project,
+        prompt: childPrompt,
+        requestedBy: prompt.ownerId,
+        sourceUi: "excalidraw",
+        startImmediately: true,
+        allowLocalOnlyWithoutRemote: false,
+        branchName,
+        worktreeName,
+        model: planAgent.model ?? DEFAULT_MODEL,
+        effort: planAgent.effort ?? ("medium" as Effort),
+        parentOrchestrationId: initial.id,
+        orchestrationAgentId: agent.id,
+        agentRole: planAgent.role,
+      });
+      this.deps.orchestrationAgents.updateChildTask(agent.id, result.task.id);
+      this.deps.orchestrationAgents.updateBranch(agent.id, branchName, result.task.worktreePath ?? "");
+      this.deps.orchestrationAgents.updateStatus(agent.id, result.started ? "queued" : "created");
+      cards.push(this.hydrateCard(this.deps.cards.createForTaskWithMode(result.task, {
+        command: `/orchestrate ${current.goal}`,
+        mode: "orchestration_agent",
+        x: position.x,
+        y: position.y,
+        parentCardId: container.id,
+        metadata: {
+          type: "orchestration_agent",
+          orchestrationId: initial.id,
+          parentOrchestrationId: initial.id,
+          projectId: project.id,
+          agentIndex: agent.agentIndex,
+          agentName: agent.agentName,
+          agentRole: planAgent.role,
+          goal: planAgent.objective,
+          planSummary: planAgent.prompt,
+        },
+      })));
+    }
+    const launched = this.deps.orchestrations.updateStatus(initial.id, "agents_spawned");
+    this.deps.orchestrationMessages.create(initial.id, "system", `Canvas prompt launched ${plannedAgents.length} child agents.`, {
+      metadata: { kind: "agents_spawned", childCount: plannedAgents.length, source: "canvas_prompt_plan_control", promptNodeId: prompt.id, promptLinkId: link.id },
+    });
+    return { kind: "start_work", orchestration: this.orchestrationView(launched), cards: this.hydrateCards(cards) };
+  }
+
+  private async dispatchPlanPrompt(prompt: CanvasPromptNode, link: CanvasPromptLink, body: string): Promise<JsonRecord> {
+    const card = this.deps.cards.createPlanCard({
+      projectId: prompt.projectId,
+      command: `${prompt.commandText} ${body}`,
+      title: `Plan Card - ${oneLine(body, 54)}`,
+      label: [
+        "Canvas Prompt Plan",
+        `Target: ${link.targetKind} ${link.targetId}`,
+        `Prompt: ${oneLine(body, 120)}`,
+      ].join("\n"),
+      x: prompt.x + prompt.width + 80,
+      y: prompt.y,
+      metadata: {
+        type: "plan",
+        projectId: prompt.projectId,
+        status: "planned",
+        planSummary: body,
+      },
+    });
+    return { kind: "plan_card", card: this.hydrateCard(card) };
+  }
+
+  private async dispatchImplementPrompt(prompt: CanvasPromptNode, link: CanvasPromptLink, body: string): Promise<JsonRecord> {
+    const project = await this.getSyncedExcalidrawProject(this.requireExcalidrawProject(prompt.projectId));
+    if (link.targetKind === "task_card") {
+      const card = this.deps.cards.findById(link.targetId);
+      if (!card?.taskId) {
+        throw new Error("Connect this prompt to a task card.");
+      }
+      const task = this.deps.tasks.getById(card.taskId);
+      if (!task) {
+        throw new Error(`Task ${card.taskId} not found.`);
+      }
+      await this.deps.implementService.enqueueFollowUp({
+        task,
+        content: body,
+        requestedBy: prompt.ownerId,
+        sourceUi: "excalidraw",
+      });
+      const refreshed = this.deps.tasks.getById(task.id) ?? task;
+      return { kind: "task_message", task: this.taskHistoryView(refreshed), card: this.hydrateCard(card) };
+    }
+    const projectView = this.projectView(project);
+    if (!projectView.prReady) {
+      throw new Error(projectView.blockers.join(" "));
+    }
+    const scopedPrompt = scopedCanvasPromptBody(body, link);
+    const result = await this.deps.implementService.run({
+      project,
+      prompt: scopedPrompt,
+      requestedBy: prompt.ownerId,
+      sourceUi: "excalidraw",
+      startImmediately: true,
+      allowLocalOnlyWithoutRemote: false,
+    });
+    const card = this.hydrateCard(this.deps.cards.createForTask(result.task, {
+      command: `${prompt.commandText} ${body}`,
+      x: prompt.x + prompt.width + 80,
+      y: prompt.y,
+    }));
+    return {
+      kind: "implement",
+      taskId: String(result.task.id),
+      status: mapTaskStatus(result.task.status),
+      card,
+    };
+  }
+
+  private async dispatchOrchestratePrompt(
+    prompt: CanvasPromptNode,
+    link: CanvasPromptLink,
+    body: string,
+    dispatchHash: string,
+  ): Promise<JsonRecord> {
+    if (!link.orchestrationId) {
+      const syntheticBody: JsonRecord = {
+        message: `${prompt.commandText} ${body}`,
+        projectId: prompt.projectId,
+        x: prompt.x + prompt.width + 80,
+        y: prompt.y,
+      };
+      const project = this.requireExcalidrawProject(prompt.projectId);
+      const orchestration = this.deps.orchestrations.create({
+        projectId: project.id,
+        authorUserId: prompt.ownerId,
+        goal: body,
+        plannerEffort: "high",
+        minAgents: 2,
+        maxAgents: 10,
+        autoStartChildren: true,
+      });
+      this.deps.orchestrationMessages.create(orchestration.id, "user", body, {
+        authorUserId: prompt.ownerId,
+        metadata: canvasPromptMetadata(prompt, link, dispatchHash, "initial_prompt"),
+      });
+      const workflowState = this.getOrCreateWorkflowForOrchestration(orchestration);
+      this.deps.workflowEvents.graphCreated(workflowState.workflow);
+      console.info("Canvas prompt orchestration flow created.", {
+        orchestrationId: orchestration.id,
+        promptNodeId: prompt.id,
+        linkId: link.id,
+        workflowGraphId: workflowState.workflow.graph.id,
+      });
+      const label = orchestrationParentLabel(orchestration, project, "Planner queued from canvas prompt.");
+      const size = orchestrationParentSize(label, undefined, orchestration.maxAgents);
+      const card = this.deps.cards.createPlanCard({
+        projectId: project.id,
+        command: stringField(syntheticBody, "message"),
+        title: `Orchestration #${orchestration.id}`,
+        label,
+        mode: "orchestration_parent",
+        status: "planning",
+        x: numberField(syntheticBody, "x") ?? nextCardX(orchestration.id),
+        y: numberField(syntheticBody, "y") ?? nextCardY(orchestration.id),
+        width: size.width,
+        height: size.height,
+        metadata: {
+          type: "orchestration_parent",
+          orchestrationId: orchestration.id,
+          projectId: project.id,
+          goal: body,
+          planSummary: "Planning started",
+        },
+      });
+      const saved = this.deps.orchestrations.updateCardIds(orchestration.id, card.id, null);
+      this.runInitialCanvasPromptPlannerTurn(orchestration.id, prompt, link, dispatchHash, workflowState.workflow).catch((error) => {
+        console.error("Canvas prompt initial planner turn failed.", {
+          orchestrationId: orchestration.id,
+          promptNodeId: prompt.id,
+          linkId: link.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        this.deps.canvasPrompts.markDispatchFailed(link.id, error instanceof Error ? error.message : String(error));
+        this.refreshParentOrchestrationCard(this.requireOrchestration(orchestration.id), error instanceof Error ? error.message : String(error), "failed");
+      });
+      return {
+        kind: "orchestrate",
+        deferDispatchCompletion: true,
+        orchestration: this.orchestrationView(saved),
+        card: this.hydrateCard(card),
+        workflow: workflowView(this.deps.workflows.getCurrentGraphForOrchestration(orchestration.id) ?? workflowState.workflow),
+      };
+    }
+    const orchestration = this.requireOrchestration(link.orchestrationId);
+    const content = scopedCanvasPromptBody(body, link);
+    this.deps.orchestrationMessages.create(orchestration.id, "user", content, {
+      authorUserId: prompt.ownerId,
+      metadata: canvasPromptMetadata(prompt, link, dispatchHash, "canvas_prompt_link"),
+    });
+    const workflowState = this.getOrCreateWorkflowForOrchestration(orchestration);
+    if (workflowState.created) {
+      this.deps.workflowEvents.graphCreated(workflowState.workflow);
+    }
+    console.info("Canvas prompt orchestration continuation queued.", {
+      orchestrationId: orchestration.id,
+      promptNodeId: prompt.id,
+      linkId: link.id,
+      workflowGraphId: workflowState.workflow.graph.id,
+      targetWorkflowNodeId: link.workflowNodeId,
+    });
+    this.runCanvasPromptPlannerTurn(orchestration.id, content, prompt, link, dispatchHash).catch((error) => {
+      console.error("Canvas prompt planner continuation failed.", {
+        orchestrationId: orchestration.id,
+        promptNodeId: prompt.id,
+        linkId: link.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      this.deps.canvasPrompts.markDispatchFailed(link.id, error instanceof Error ? error.message : String(error));
+      this.refreshParentOrchestrationCard(this.requireOrchestration(orchestration.id), error instanceof Error ? error.message : String(error), "failed");
+    });
+    return {
+      kind: "orchestration_message",
+      deferDispatchCompletion: true,
+      orchestration: this.orchestrationView(this.requireOrchestration(orchestration.id)),
+      workflow: workflowView(this.deps.workflows.getCurrentGraphForOrchestration(orchestration.id) ?? workflowState.workflow),
+    };
+  }
+
+  private async runInitialCanvasPromptPlannerTurn(
+    orchestrationId: number,
+    prompt: CanvasPromptNode,
+    link: CanvasPromptLink,
+    dispatchHash: string,
+    workflow: PersistedWorkflowGraph,
+  ): Promise<void> {
+    console.info("Canvas prompt initial planner turn started.", {
+      orchestrationId,
+      promptNodeId: prompt.id,
+      linkId: link.id,
+      workflowGraphId: workflow.graph.id,
+    });
+    const orchestration = this.requireOrchestration(orchestrationId);
+    const message = await this.deps.planner.startPlanner(orchestrationId, {
+      extraInstructions: workflowPlannerPromptContract(workflow),
+      metadata: { kind: "planner_turn", ...canvasPromptMetadata(prompt, link, dispatchHash, "planner_turn"), workflow: workflowMessageMetadata(workflow) },
+    });
+    console.info("Canvas prompt initial planner returned message.", {
+      orchestrationId,
+      promptNodeId: prompt.id,
+      linkId: link.id,
+      messageLength: message.length,
+    });
+    await this.recordPlannerWorkflowPatch(orchestration, message, workflow);
+    this.refreshParentOrchestrationCard(this.requireOrchestration(orchestrationId), message, "planning");
+    this.deps.canvasPrompts.markDispatchSent(link.id, dispatchHash);
+    console.info("Canvas prompt initial planner turn completed.", {
+      orchestrationId,
+      promptNodeId: prompt.id,
+      linkId: link.id,
+      workflowGraphId: workflow.graph.id,
+    });
+  }
+
+  private async runCanvasPromptPlannerTurn(
+    orchestrationId: number,
+    content: string,
+    prompt: CanvasPromptNode,
+    link: CanvasPromptLink,
+    dispatchHash: string,
+  ): Promise<void> {
+    console.info("Canvas prompt planner continuation started.", {
+      orchestrationId,
+      promptNodeId: prompt.id,
+      linkId: link.id,
+      targetWorkflowNodeId: link.workflowNodeId,
+    });
+    await this.runPlannerTurn(orchestrationId, content);
+    this.deps.canvasPrompts.markDispatchSent(link.id, dispatchHash);
+    console.info("Canvas prompt planner continuation completed.", {
+      orchestrationId,
+      promptNodeId: prompt.id,
+      linkId: link.id,
+      targetWorkflowNodeId: link.workflowNodeId,
+    });
   }
 
   private async handleImplement(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -1498,7 +2170,7 @@ export class ExcalidrawApiServer {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Vary", "Origin");
     }
-    res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   }
 
@@ -2194,9 +2866,83 @@ function stringField(body: JsonRecord, key: string, defaultValue = ""): string {
   return value;
 }
 
+function optionalStringField(body: JsonRecord, key: string): string | undefined {
+  if (!(key in body) || body[key] === null || body[key] === undefined) return undefined;
+  return stringField(body, key);
+}
+
 function numberField(body: JsonRecord, key: string): number | undefined {
   const value = body[key];
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function targetKindField(body: JsonRecord, key: string): CanvasPromptTargetKind {
+  const value = stringField(body, key);
+  if (isSupportedPromptTarget(value)) return value;
+  throw new Error("Connect this prompt to a workflow node, goal, open question, or task card.");
+}
+
+function linkKindField(body: JsonRecord, key: string): CanvasPromptLinkKind | undefined {
+  const value = optionalStringField(body, key);
+  if (!value) return undefined;
+  if (value === "workflow_dispatch" || value === "question_answer" || value === "question_context" || value === "plan_control") return value;
+  throw new Error(`${key} must be a supported canvas prompt link kind.`);
+}
+
+function isSupportedPromptTarget(value: string): value is CanvasPromptTargetKind {
+  return value === "workflow_node" || value === "open_question" || value === "task_card" || value === "orchestration_parent";
+}
+
+function matchingQuestionOptionIds(body: string, options: readonly { id: string; label: string }[]): string[] {
+  const normalizedBody = normalizeAnswerText(body);
+  if (!normalizedBody) return [];
+  return options
+    .filter((option) => {
+      const id = normalizeAnswerText(option.id);
+      const label = normalizeAnswerText(option.label);
+      return normalizedBody === id || normalizedBody === label || normalizedBody.includes(id) || normalizedBody.includes(label);
+    })
+    .map((option) => option.id);
+}
+
+function normalizeAnswerText(value: string): string {
+  return value.trim().toLowerCase().replace(/^[-*]\s*/, "").replace(/^[a-z]\)\s*/, "").replace(/\s+/g, " ");
+}
+
+function scopedCanvasPromptBody(body: string, link: CanvasPromptLink): string {
+  const context = [
+    "Canvas prompt target context:",
+    `- targetKind: ${link.targetKind}`,
+    `- targetId: ${link.targetId}`,
+    link.workflowGraphId ? `- workflowGraphId: ${link.workflowGraphId}` : null,
+    link.workflowNodeId ? `- workflowNodeId: ${link.workflowNodeId}` : null,
+    link.questionId ? `- questionId: ${link.questionId}` : null,
+    link.orchestrationId ? `- orchestrationId: ${link.orchestrationId}` : null,
+  ].filter(Boolean).join("\n");
+  return `${body}\n\n${context}`;
+}
+
+function canvasPromptMetadata(
+  prompt: CanvasPromptNode,
+  link: CanvasPromptLink,
+  dispatchHash: string,
+  kind: string,
+): JsonRecord {
+  return {
+    source: "canvas_prompt_link",
+    kind,
+    promptNodeId: prompt.id,
+    promptLinkId: link.id,
+    commandKind: prompt.commandKind,
+    dispatchHash,
+    targetKind: link.targetKind,
+    targetId: link.targetId,
+    linkKind: link.linkKind,
+    questionId: link.questionId ?? undefined,
+    targetWorkflowNodeId: link.workflowNodeId ?? undefined,
+    targetWorkflowGraphId: link.workflowGraphId ?? undefined,
+    targetOrchestrationId: link.orchestrationId ?? undefined,
+  };
 }
 
 function limitParam(url: URL): number {
@@ -2317,5 +3063,5 @@ function looksLikeGitRemote(value: string): boolean {
 function isClientError(error: unknown): boolean {
   if (error instanceof SyntaxError) return true;
   const message = error instanceof Error ? error.message : String(error);
-  return /must be|required|too large|non-empty|mode must|source=|Use \/(implement|orchestrate)|Git remote URL|project|closed|remote before|Orchestration message/.test(message);
+  return /must be|required|too large|non-empty|mode must|source=|Use \/(implement|orchestrate)|Git remote URL|project|closed|remote before|Orchestration message|Connect this prompt|Prompt already sent|Only one workflow target|Sent prompt|Enter prompt text/.test(message);
 }

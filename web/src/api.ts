@@ -334,6 +334,73 @@ export interface ArcOrchestrationView {
   };
 }
 
+export type ArcCanvasPromptCommandKind =
+  | "orchestrate"
+  | "implement"
+  | "plan"
+  | "answer"
+  | "continue_planning"
+  | "start_work"
+  | "remake_plan";
+export type ArcCanvasPromptStatus = "draft" | "linked" | "waiting_for_body" | "sending" | "sent" | "failed" | "dirty" | "historical";
+export type ArcCanvasPromptTargetKind = "workflow_node" | "open_question" | "task_card" | "orchestration_parent";
+export type ArcCanvasPromptLinkKind = "workflow_dispatch" | "question_answer" | "question_context" | "plan_control";
+export type ArcCanvasPromptLinkStatus = "linked" | "waiting_for_body" | "sending" | "sent" | "failed" | "dirty" | "historical";
+
+export interface ArcCanvasPromptNode {
+  id: string;
+  projectId: number;
+  ownerId: string;
+  ownerLabel: string;
+  commandKind: ArcCanvasPromptCommandKind;
+  commandText: string;
+  body: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  status: ArcCanvasPromptStatus;
+  lastDispatchHash: string | null;
+  lastDispatchedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+}
+
+export interface ArcCanvasPromptLink {
+  id: string;
+  projectId: number;
+  promptNodeId: string;
+  linkKind: ArcCanvasPromptLinkKind;
+  ownerId: string;
+  sourceKind: string | null;
+  sourceId: string | null;
+  targetKind: ArcCanvasPromptTargetKind;
+  targetId: string;
+  orchestrationId: number | null;
+  questionId: string | null;
+  workflowGraphId: string | null;
+  workflowNodeId: string | null;
+  taskId: number | null;
+  cardId: string | null;
+  targetOrchestrationId?: number | null;
+  targetWorkflowGraphId?: string | null;
+  targetWorkflowNodeId?: string | null;
+  arrowElementId: string;
+  status: ArcCanvasPromptLinkStatus;
+  dispatchHash: string | null;
+  dispatchedAt: string | null;
+  error: string | null;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+}
+
+export interface ArcCanvasPromptBundle {
+  prompts: ArcCanvasPromptNode[];
+  links: ArcCanvasPromptLink[];
+}
+
 export interface ImplementResponse {
   taskId: string | null;
   status: ArcStatus;
@@ -507,6 +574,105 @@ export async function updateCardPosition(card: Pick<ArcCard, "id" | "x" | "y" | 
     method: "PATCH",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ x: card.x, y: card.y, width: card.width, height: card.height }),
+  });
+  await parseJsonResponse(response);
+}
+
+export async function listCanvasPrompts(projectId: number): Promise<ArcCanvasPromptBundle> {
+  const response = await fetch(`/api/projects/${encodeURIComponent(String(projectId))}/canvas-prompts`);
+  return parseJsonResponse(response);
+}
+
+export async function createCanvasPrompt(
+  projectId: number,
+  prompt: {
+    ownerId: string;
+    ownerLabel: string;
+    commandKind: ArcCanvasPromptCommandKind;
+    body?: string;
+    x: number;
+    y: number;
+    width?: number;
+    height?: number;
+  },
+): Promise<{ prompt: ArcCanvasPromptNode }> {
+  const response = await fetch(`/api/projects/${encodeURIComponent(String(projectId))}/canvas-prompts`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(prompt),
+  });
+  return parseJsonResponse(response);
+}
+
+export async function updateCanvasPrompt(
+  promptId: string,
+  changes: Partial<Pick<ArcCanvasPromptNode, "ownerId" | "ownerLabel" | "commandKind" | "commandText" | "body" | "x" | "y" | "width" | "height">> & { text?: string },
+): Promise<{ prompt: ArcCanvasPromptNode }> {
+  const response = await fetch(`/api/canvas-prompts/${encodeURIComponent(promptId)}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(changes),
+  });
+  return parseJsonResponse(response);
+}
+
+export async function deleteCanvasPrompt(promptId: string): Promise<void> {
+  const response = await fetch(`/api/canvas-prompts/${encodeURIComponent(promptId)}`, { method: "DELETE" });
+  await parseJsonResponse(response);
+}
+
+export async function createCanvasPromptLink(
+  projectId: number,
+  link: {
+    promptNodeId: string;
+    ownerId: string;
+    linkKind?: ArcCanvasPromptLinkKind;
+    sourceKind?: string | null;
+    sourceId?: string | null;
+    targetKind: ArcCanvasPromptTargetKind;
+    targetId: string;
+    orchestrationId?: number | null;
+    questionId?: string | null;
+    workflowGraphId?: string | null;
+    workflowNodeId?: string | null;
+    taskId?: number | null;
+    cardId?: string | null;
+    targetOrchestrationId?: number | null;
+    targetWorkflowGraphId?: string | null;
+    targetWorkflowNodeId?: string | null;
+    arrowElementId?: string;
+  },
+): Promise<{ link: ArcCanvasPromptLink }> {
+  const response = await fetch(`/api/projects/${encodeURIComponent(String(projectId))}/canvas-prompt-links`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(link),
+  });
+  return parseJsonResponse(response);
+}
+
+export async function deleteCanvasPromptLink(linkId: string): Promise<void> {
+  const response = await fetch(`/api/canvas-prompt-links/${encodeURIComponent(linkId)}`, { method: "DELETE" });
+  await parseJsonResponse(response);
+}
+
+export async function dispatchCanvasPromptLink(linkId: string): Promise<{
+  prompt: ArcCanvasPromptNode;
+  link: ArcCanvasPromptLink;
+  orchestration?: ArcOrchestrationView;
+  card?: ArcCard;
+  cards?: ArcCard[];
+  workflow?: ArcPersistedWorkflowGraph;
+}> {
+  const response = await fetch(`/api/canvas-prompt-links/${encodeURIComponent(linkId)}/dispatch`, { method: "POST" });
+  return parseJsonResponse(response);
+}
+
+export async function logCanvasDebugEvent(event: Record<string, unknown>): Promise<void> {
+  const response = await fetch("/api/canvas-debug-events", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(event),
   });
   await parseJsonResponse(response);
 }
