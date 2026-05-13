@@ -39,11 +39,21 @@
 ## Fleet Plan And Child Agent Spawn
 
 1. Prepare Plan or Launch asks `OrchestrationPlannerService.generateFleetPlan(...)` for strict `AgentFleetPlan` JSON.
-2. `AgentFleetPlanValidator` checks agent count, roles, prompts, and acceptance criteria.
-3. Excalidraw marks the parent orchestration card ready and shows Start Plan.
-4. Start Plan creates child tasks through `ImplementService.run(...)` with explicit branch/worktree names.
-5. Child cards are placed inside the orchestration parent container.
-6. Child task completion updates orchestration agent status and parent aggregate progress.
+2. The planner should define shared `interfaceContracts` and per-agent `AgentWorkContract` objects before child agents spawn.
+3. `AgentFleetPlanValidator` checks agent count, roles, prompts, acceptance criteria, and the optional contract shapes.
+4. Excalidraw marks the parent orchestration card ready and shows Start Plan.
+5. Start Plan creates child tasks through `ImplementService.run(...)` with explicit branch/worktree names.
+6. Child cards are placed inside the orchestration parent container.
+7. Child task completion updates orchestration agent status and parent aggregate progress.
+
+## Agent Safety Coordination
+
+1. Child-agent prompts include the agent safety contract and coordination skills for contract lookup, context lookup, plan history, user decisions, prompt artifacts, scope/interface changes, contract deviations, assumptions, risks, validation results, test help, integration handoff, dependency tracking, retry, reassignment, and safe abort.
+2. Agents emit `ARC_AGENT_SAFETY_EVENT_JSON` blocks when they need to change scope, shared interfaces, workflow rules, prompt artifact rules, event payloads, contracts, another agent's files, or cross-agent dependencies.
+3. `TaskMessagePump` parses those blocks from structured Codex completion output and stores them in `orchestration_safety_records`.
+4. Approved scope/interface changes create `orchestration_contract_revisions` so contract changes are auditable.
+5. The Excalidraw orchestration sidebar shows context query history, plan history requests, user decisions, prompt artifact context, validation results, failed validation alerts, integration handoffs, retry/reassignment/abort status, assumptions, risks, dependencies, change requests, deviations, contract revisions, and records needing orchestrator or user action.
+6. The orchestrator answers context queries from known state, keeps user decisions separate from assumptions, treats prompt artifacts as context instead of workflow nodes, reacts to failed validation, uses integration handoffs for final merge/PR planning, and escalates to the user only for product behavior, user intent, or major tradeoffs.
 
 ## Workflow Event Stream
 

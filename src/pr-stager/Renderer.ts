@@ -20,7 +20,7 @@ export function renderPullRequestBody(input: {
     verificationList(completion),
     "",
     "## Risk / follow-up",
-    bulletList([...completion.risks, ...completion.followUps], "No known risks or follow-ups were reported."),
+    bulletList([...completion.risks, ...completion.followUps, ...contractNotes(completion)], "No known risks or follow-ups were reported."),
     "",
     "## Review focus",
     bulletList(completion.reviewFocus.length ? completion.reviewFocus : reviewFocusFromDiff(diff)),
@@ -37,6 +37,13 @@ export function renderPullRequestBody(input: {
   ].join("\n");
   assertNoPrLeaks(body);
   return body;
+}
+
+function contractNotes(completion: AgentCompletion): string[] {
+  return [
+    ...completion.contractDeviations.map((item) => `Contract deviation: ${item}`),
+    ...completion.newInterfaces.map((item) => `New interface: ${item}`),
+  ];
 }
 
 function bulletList(items: string[], empty = "No details provided."): string {

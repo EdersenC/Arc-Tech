@@ -19,6 +19,8 @@ const AgentCompletionSchema = z.object({
   risks: z.array(z.string()).default([]),
   followUps: z.array(z.string()).default([]),
   reviewFocus: z.array(z.string()).default([]),
+  contractDeviations: z.array(z.string()).default([]),
+  newInterfaces: z.array(z.string()).default([]),
   prTitle: z.string().optional(),
   comparison: ComparisonSchema.optional(),
 });

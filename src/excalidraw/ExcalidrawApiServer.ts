@@ -8,15 +8,20 @@ import type { AppConfig } from "../config.js";
 import type { PullRequestFeedbackRepo } from "../github/PullRequestFeedbackRepo.js";
 import type { PullRequestFeedbackWorker } from "../github/PullRequestFeedbackWorker.js";
 import { stableJson } from "../orchestrations/AgentFleetPlanValidator.js";
+import { agentSafetyInstructions } from "../orchestrations/AgentSafetyInstructions.js";
+import { agentWorkContract, formatAgentWorkContract, sharedInterfaceContractText } from "../orchestrations/AgentWorkContract.js";
 import type { OrchestrationPlannerService } from "../orchestrations/OrchestrationPlannerService.js";
 import type { OrchestrationAgentsRepo } from "../orchestrations/repos/OrchestrationAgentsRepo.js";
 import type { OrchestrationMessagesRepo } from "../orchestrations/repos/OrchestrationMessagesRepo.js";
+import type { OrchestrationSafetyRepo } from "../orchestrations/repos/OrchestrationSafetyRepo.js";
 import type { OrchestrationsRepo } from "../orchestrations/repos/OrchestrationsRepo.js";
 import type {
   AgentFleetPlan,
   AgentFleetPlanAgent,
   Orchestration,
   OrchestrationMessage,
+  OrchestrationSafetyKind,
+  OrchestrationSafetyStatus,
   PlannerQuestionView,
 } from "../orchestrations/types.js";
 import type { ProjectStore, TaskStore } from "../stores.js";
@@ -59,6 +64,7 @@ interface ApiDeps {
   orchestrations: OrchestrationsRepo;
   orchestrationAgents: OrchestrationAgentsRepo;
   orchestrationMessages: OrchestrationMessagesRepo;
+  orchestrationSafety: OrchestrationSafetyRepo;
   planner: Pick<OrchestrationPlannerService, "startPlanner" | "continuePlanner" | "generateFleetPlan">;
   workflows: WorkflowService;
   workflowEvents: WorkflowEventBus;
@@ -160,6 +166,20 @@ export class ExcalidrawApiServer {
     const orchestrationQuestionMessageMatch = /^\/api\/orchestrations\/(\d+)\/questions\/([^/]+)\/messages$/.exec(url.pathname);
     if (orchestrationQuestionMessageMatch && req.method === "POST") {
       await this.handleOrchestrationQuestionMessage(Number(orchestrationQuestionMessageMatch[1]), decodeURIComponent(orchestrationQuestionMessageMatch[2]), req, res);
+      return;
+    }
+    const orchestrationSafetyMatch = /^\/api\/orchestrations\/(\d+)\/safety$/.exec(url.pathname);
+    if (orchestrationSafetyMatch && req.method === "GET") {
+      this.sendJson(res, 200, { safety: this.deps.orchestrationSafety.listByOrchestrationId(Number(orchestrationSafetyMatch[1])) });
+      return;
+    }
+    if (orchestrationSafetyMatch && req.method === "POST") {
+      await this.handleCreateOrchestrationSafety(Number(orchestrationSafetyMatch[1]), req, res);
+      return;
+    }
+    const orchestrationSafetyRecordMatch = /^\/api\/orchestration-safety\/(\d+)$/.exec(url.pathname);
+    if (orchestrationSafetyRecordMatch && req.method === "PATCH") {
+      await this.handleUpdateOrchestrationSafety(Number(orchestrationSafetyRecordMatch[1]), req, res);
       return;
     }
     const orchestrationPlanUpdateMatch = /^\/api\/orchestrations\/(\d+)\/plan\/update$/.exec(url.pathname);
@@ -805,6 +825,35 @@ export class ExcalidrawApiServer {
     if (current) {
       this.deps.workflowEvents.snapshot(current);
     }
+  }
+
+  private async handleCreateOrchestrationSafety(orchestrationId: number, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    this.requireOrchestration(orchestrationId);
+    const body = await readJson(req);
+    const kind = safetyKindField(body, "kind");
+    const title = stringField(body, "title", kind.replace(/_/g, " ")).trim() || kind.replace(/_/g, " ");
+    const record = this.deps.orchestrationSafety.create({
+      orchestrationId,
+      kind,
+      title,
+      body: stringField(body, "body", ""),
+      severity: nullableString(body.severity),
+      needsOrchestratorAction: body.needsOrchestratorAction === true,
+      needsUserAction: body.needsUserAction === true,
+      payload: body.payload ?? body,
+    });
+    this.sendJson(res, 201, record);
+  }
+
+  private async handleUpdateOrchestrationSafety(recordId: number, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const body = await readJson(req);
+    const status = safetyStatusField(body, "status");
+    const record = this.deps.orchestrationSafety.updateStatus(recordId, status, nullableString(body.body) ?? undefined);
+    if (!record) {
+      this.sendJson(res, 404, { error: `Safety record #${recordId} not found.` });
+      return;
+    }
+    this.sendJson(res, 200, record);
   }
 
   private async handleListCanvasPrompts(projectId: number, res: ServerResponse): Promise<void> {
@@ -1812,6 +1861,8 @@ export class ExcalidrawApiServer {
         .filter((card): card is ExcalidrawCard => Boolean(card))
         .map((card) => this.hydrateCard(card)),
       questionCards: [],
+      safety: this.deps.orchestrationSafety.listByOrchestrationId(orchestration.id),
+      contractRevisions: this.deps.orchestrationSafety.listContractRevisions(orchestration.id),
       aggregate: aggregateAgents(agents),
     };
   }
@@ -2531,7 +2582,6 @@ function buildFleetPlan(
       prompt: [
         `Implement the "${name}" slice for orchestration #${orchestration.id}.`,
         `Project: ${project.projectName}`,
-        `Repo path: ${project.repoPath}`,
         `Remote: ${project.remoteUrl ?? project.remoteStatus}`,
         `Parent goal: ${orchestration.goal}`,
         decisions.length ? `Selected planning decisions:\n${decisions.map((decision) => `- ${decision}`).join("\n")}` : "No extra decisions were selected.",
@@ -2551,17 +2601,27 @@ function buildFleetPlan(
   });
   const plan: AgentFleetPlan = {
     orchestrationGoal: orchestration.goal,
-    architectureSummary: `Modernize ${project.projectName} for "${oneLine(orchestration.goal, 100)}" using project-scoped agents working in ${project.repoPath}.`,
+    architectureSummary: `Modernize ${project.projectName} for "${oneLine(orchestration.goal, 100)}" using project-scoped agents and explicit module ownership.`,
     agentCount: agents.length,
     sharedContext: [
       `Project: ${project.projectName}`,
-      `Repo path: ${project.repoPath}`,
       `Remote: ${project.remoteUrl ?? project.remoteStatus}`,
-      `Worktrees: ${project.worktreesPath}`,
       "The Arc-Tech runner is only the execution harness. Agents must inspect and modify the selected project repository.",
       decisions.length ? `Planning decisions: ${decisions.join("; ")}` : "No custom planning decisions were selected.",
     ].join("\n"),
-    integrationStrategy: `Use isolated branches/worktrees for ${project.projectName}; start with repository discovery, then apply narrow modernization changes and run available validation commands.`,
+    integrationStrategy: `Use isolated branches for ${project.projectName}; start with repository discovery, then apply narrow modernization changes and run available validation commands.`,
+    interfaceContracts: [
+      {
+        name: "project-owned-changes",
+        kind: "service",
+        contract: "Child agents modify only the selected project repository through their assigned worktree and report validation results through ARC_AGENT_COMPLETION_JSON.",
+      },
+      {
+        name: "workflow-context-readonly",
+        kind: "workflow",
+        contract: "WorkflowGraph and canvas prompt artifacts are planning context only for child agents unless a contract explicitly assigns those modules.",
+      },
+    ],
     agents,
   };
   return workflow ? withWorkflowSharedContext(plan, workflow.graph) : plan;
@@ -2604,6 +2664,7 @@ function childAgentPrompt(
   index: number,
   branchName: string,
 ): string {
+  const contract = agentWorkContract(orchestration, plan, agent, index);
   return `You are child implementation agent ${index} for Excalidraw orchestration #${orchestration.id}.
 
 Agent name:
@@ -2624,6 +2685,9 @@ ${plan.sharedContext}
 Integration strategy:
 ${plan.integrationStrategy}
 
+Shared interface contracts:
+${sharedInterfaceContractText(plan.interfaceContracts)}
+
 Depends on:
 ${agent.dependsOn?.length ? agent.dependsOn.join("\n") : "None"}
 
@@ -2636,18 +2700,41 @@ ${agent.acceptanceCriteria.map((criterion) => `- ${criterion}`).join("\n")}
 Branch:
 ${branchName}
 
-Detailed prompt:
+AgentWorkContract JSON:
+${formatAgentWorkContract(contract)}
+
+Assigned implementation instructions:
 ${agent.prompt}
+
+${agentSafetyInstructions()}
 
 Rules:
 - Work only on your assigned objective.
+- Treat AgentWorkContract as the source of truth for owned scope, forbidden scope, interfaces, validation, and completion reporting.
+- If implementation requires changing forbidden scope or shared interfaces, request approval with the matching safety skill before making the risky change.
 - Avoid unrelated refactors.
 - Keep changes mergeable with sibling agents.
 - Do not merge your branch.
 - Do not run git add, git commit, git push, or gh pr create.
 - The runner owns committing, pushing, and pull request creation.
 - Run relevant tests if available.
-- End with a concise completion summary.`;
+- End with a concise human completion summary.
+- Include exactly one fenced ARC_AGENT_COMPLETION_JSON block for the runner-owned PR stager:
+\`\`\`ARC_AGENT_COMPLETION_JSON
+{
+  "summary": ["short reviewer-facing result"],
+  "changes": ["behavior-level change, no local paths"],
+  "verification": [{"command": "test/build command", "result": "passed", "notes": "optional"}],
+  "risks": ["known risk or empty if none"],
+  "followUps": ["follow-up or empty if none"],
+  "reviewFocus": ["what reviewers should inspect"],
+  "contractDeviations": ["contract deviation or empty if none"],
+  "newInterfaces": ["new or changed interface or empty if none"],
+  "prTitle": "short pull request title"
+}
+\`\`\`
+- Do not include local filesystem paths, raw prompts, WorkflowGraph dumps, or internal runner rules in that JSON.
+- Do not include changed-file lists in that JSON; the runner derives file facts from git.`;
 }
 
 function orchestrationParentLabel(orchestration: Orchestration, project: Project | undefined, latestMessage: string): string {
@@ -2887,6 +2974,51 @@ function linkKindField(body: JsonRecord, key: string): CanvasPromptLinkKind | un
   if (!value) return undefined;
   if (value === "workflow_dispatch" || value === "question_answer" || value === "question_context" || value === "plan_control") return value;
   throw new Error(`${key} must be a supported canvas prompt link kind.`);
+}
+
+const SAFETY_KINDS = new Set<OrchestrationSafetyKind>([
+  "query_contract",
+  "query_project_context",
+  "query_plan_history",
+  "query_user_decisions",
+  "query_prompt_artifacts",
+  "request_scope_change",
+  "request_interface_change",
+  "report_contract_deviation",
+  "declare_assumption",
+  "risk_register_update",
+  "sync_with_orchestrator",
+  "request_peer_coordination",
+  "notify_dependency_ready",
+  "request_dependency_status",
+  "report_validation_result",
+  "request_test_help",
+  "handoff_to_integration",
+  "request_retry",
+  "request_reassignment",
+  "abort_with_reason",
+]);
+
+const SAFETY_STATUSES = new Set<OrchestrationSafetyStatus>(["open", "approved", "denied", "resolved", "superseded"]);
+
+function safetyKindField(body: JsonRecord, key: string): OrchestrationSafetyKind {
+  const value = stringField(body, key);
+  if (SAFETY_KINDS.has(value as OrchestrationSafetyKind)) return value as OrchestrationSafetyKind;
+  throw new Error(`${key} must be a supported agent safety kind.`);
+}
+
+function safetyStatusField(body: JsonRecord, key: string): OrchestrationSafetyStatus {
+  const value = stringField(body, key);
+  if (SAFETY_STATUSES.has(value as OrchestrationSafetyStatus)) return value as OrchestrationSafetyStatus;
+  throw new Error(`${key} must be a supported agent safety status.`);
+}
+
+function nullableString(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") {
+    throw new Error("Expected string or null.");
+  }
+  return value;
 }
 
 function isSupportedPromptTarget(value: string): value is CanvasPromptTargetKind {

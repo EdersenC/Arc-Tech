@@ -149,6 +149,7 @@ export interface AgentFleetPlanAgent {
   dependsOn?: string[];
   expectedFiles?: string[];
   acceptanceCriteria: string[];
+  workContract?: AgentWorkContract;
 }
 
 export interface AgentFleetPlan {
@@ -157,7 +158,64 @@ export interface AgentFleetPlan {
   agentCount: number;
   sharedContext: string;
   integrationStrategy: string;
+  interfaceContracts?: AgentInterfaceContract[];
   agents: AgentFleetPlanAgent[];
+}
+
+export type AgentInterfaceKind = "api" | "type" | "db" | "event" | "component" | "service" | "workflow" | "prompt-artifact";
+
+export interface AgentInterfaceContract {
+  name: string;
+  kind: AgentInterfaceKind;
+  contract: string;
+}
+
+export interface AgentDataContract {
+  name: string;
+  ownerAgent?: string;
+  schema: string;
+  compatibilityRules: string[];
+}
+
+export interface AgentScopeContract {
+  files?: string[];
+  directories?: string[];
+  modules?: string[];
+  responsibilities: string[];
+}
+
+export interface AgentForbiddenScopeContract {
+  files?: string[];
+  directories?: string[];
+  modules?: string[];
+  rules: string[];
+}
+
+export interface AgentWorkContract {
+  contractVersion: "arc-agent-contract-v1";
+  orchestrationId: number;
+  agentIndex: number;
+  agentName: string;
+  role: string;
+  objective: string;
+  userGoal: string;
+  sharedContext: string;
+  ownedScope: AgentScopeContract;
+  forbiddenScope: AgentForbiddenScopeContract;
+  interfacesToConsume: AgentInterfaceContract[];
+  interfacesToProvide: AgentInterfaceContract[];
+  dataContracts: AgentDataContract[];
+  integrationNotes: string[];
+  conflictAvoidanceRules: string[];
+  acceptanceCriteria: string[];
+  validationCommands: string[];
+  completionReportRequired: {
+    changedFiles: true;
+    contractDeviations: true;
+    newInterfaces: true;
+    validationResults: true;
+    risks: true;
+  };
 }
 
 export interface OrchestrationView {
@@ -165,4 +223,58 @@ export interface OrchestrationView {
   agents: OrchestrationAgent[];
   messages: OrchestrationMessage[];
   questions?: PlannerQuestionView[];
+  safety?: OrchestrationSafetyRecord[];
+  contractRevisions?: OrchestrationContractRevision[];
+}
+
+export type OrchestrationSafetyKind =
+  | "query_contract"
+  | "query_project_context"
+  | "query_plan_history"
+  | "query_user_decisions"
+  | "query_prompt_artifacts"
+  | "request_scope_change"
+  | "request_interface_change"
+  | "report_contract_deviation"
+  | "declare_assumption"
+  | "risk_register_update"
+  | "sync_with_orchestrator"
+  | "request_peer_coordination"
+  | "notify_dependency_ready"
+  | "request_dependency_status"
+  | "report_validation_result"
+  | "request_test_help"
+  | "handoff_to_integration"
+  | "request_retry"
+  | "request_reassignment"
+  | "abort_with_reason";
+
+export type OrchestrationSafetyStatus = "open" | "approved" | "denied" | "resolved" | "superseded";
+
+export interface OrchestrationSafetyRecord {
+  id: number;
+  orchestrationId: number;
+  agentId: number | null;
+  taskId: number | null;
+  kind: OrchestrationSafetyKind;
+  status: OrchestrationSafetyStatus;
+  title: string;
+  body: string;
+  severity: string | null;
+  needsOrchestratorAction: boolean;
+  needsUserAction: boolean;
+  payload: unknown;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+}
+
+export interface OrchestrationContractRevision {
+  id: number;
+  orchestrationId: number;
+  safetyRecordId: number | null;
+  revisionKind: "scope" | "interface" | "contract";
+  summary: string;
+  payload: unknown;
+  createdAt: string;
 }

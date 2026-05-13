@@ -3,11 +3,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AppConfig } from "../src/config.js";
+import { CanvasPromptRepo } from "../src/canvas-prompts/CanvasPromptRepo.js";
 import { AppDatabase } from "../src/db.js";
 import { ExcalidrawApiServer } from "../src/excalidraw/ExcalidrawApiServer.js";
 import { ExcalidrawCardsRepo } from "../src/excalidraw/ExcalidrawCardsRepo.js";
 import { OrchestrationAgentsRepo } from "../src/orchestrations/repos/OrchestrationAgentsRepo.js";
 import { OrchestrationMessagesRepo } from "../src/orchestrations/repos/OrchestrationMessagesRepo.js";
+import { OrchestrationSafetyRepo } from "../src/orchestrations/repos/OrchestrationSafetyRepo.js";
 import { OrchestrationsRepo } from "../src/orchestrations/repos/OrchestrationsRepo.js";
 import { ProjectStore, TaskStore } from "../src/stores.js";
 import {
@@ -423,9 +425,11 @@ try {
     const projectStore = new ProjectStore(database.db, path.join(tmp, "workspaces"));
     const taskStore = new TaskStore(database.db);
     const cards = new ExcalidrawCardsRepo(database.db);
+    const canvasPrompts = new CanvasPromptRepo(database.db);
     const orchestrations = new OrchestrationsRepo(database.db);
     const orchestrationAgents = new OrchestrationAgentsRepo(database.db);
     const orchestrationMessages = new OrchestrationMessagesRepo(database.db);
+    const orchestrationSafety = new OrchestrationSafetyRepo(database.db);
     const apiOrchestration = orchestrations.create({
       projectId,
       authorUserId: "validator",
@@ -440,9 +444,11 @@ try {
         syncProjectOrigin: async <T>(project: T) => project,
       } as never,
       cards,
+      canvasPrompts,
       orchestrations,
       orchestrationAgents,
       orchestrationMessages,
+      orchestrationSafety,
       planner: validationPlanner(orchestrationMessages, orchestrations),
       workflows: service,
       workflowEvents: events,

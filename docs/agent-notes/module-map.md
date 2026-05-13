@@ -40,6 +40,10 @@
 
 `src/orchestrations/AgentFleetPlanValidator.ts` validates final fleet plans.
 
+`src/orchestrations/AgentWorkContract.ts` formats the per-child `AgentWorkContract` passed into spawned agent prompts. It keeps old plans compatible by generating a fallback contract when the planner omitted one.
+
+`src/orchestrations/AgentSafetyInstructions.ts` defines the shared child-agent safety contract and machine-readable safety event format. `AgentSafetyEvents.ts` parses emitted safety blocks, and `repos/OrchestrationSafetyRepo.ts` persists safety records and approved contract revisions.
+
 `src/orchestrations/OrchestrationAgentSpawner.ts` creates child implementation tasks from a final plan. Discord child agents get threads; Excalidraw child agents get cards.
 
 `src/orchestrations/OrchestrationControlPanel.ts` is the Discord control surface. Excalidraw orchestration controls live in `ExcalidrawApiServer.ts` and `web/src/App.tsx`.
@@ -66,6 +70,6 @@
 
 `src/excalidraw/ExcalidrawCardsRepo.ts` persists visual cards. Cards are not the source of task or workflow truth.
 
-`web/src/App.tsx` is the main React canvas shell. It renders cards, sidebars, canvas composer text boxes, workflow popovers, batched question controls, and launch actions.
+`web/src/App.tsx` is the main React canvas shell. It renders cards, sidebars, canvas composer text boxes, workflow popovers, batched question controls, launch actions, and agent safety registers.
 
 `web/src/workflows/workflowElements.ts` converts workflow graphs into Excalidraw elements. `workflowLayout.ts` computes graph layout sections. `useWorkflowStream.ts` subscribes to SSE workflow events.

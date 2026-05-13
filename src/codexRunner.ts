@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { CodexJsonlEventParser, type CodexJsonlEvent } from "./codex/CodexJsonlEventParser.js";
+import { agentSafetyInstructions } from "./orchestrations/AgentSafetyInstructions.js";
 import { redactSecrets } from "./redact.js";
 import type { Effort, SandboxMode, TaskMessage } from "./types.js";
 
@@ -220,6 +221,8 @@ ${messages}
 
 Continue modifying the same isolated task worktree. Stay on the current task branch.
 
+${agentSafetyInstructions()}
+
 Primary completion goal:
 - Finish the requested work in this isolated task worktree.
 - End with a concise human summary for the task thread.
@@ -232,6 +235,8 @@ Primary completion goal:
   "risks": ["known risk or empty if none"],
   "followUps": ["follow-up or empty if none"],
   "reviewFocus": ["what reviewers should inspect"],
+  "contractDeviations": ["contract deviation or empty if none"],
+  "newInterfaces": ["new or changed interface or empty if none"],
   "prTitle": "short pull request title"
 }
 \`\`\`

@@ -8,17 +8,26 @@ import type { OrchestrationsRepo } from "./repos/OrchestrationsRepo.js";
 import type { Orchestration, OrchestrationMessage } from "./types.js";
 
 const PLANNER_SYSTEM_PROMPT = `You are the planner/orchestrator agent for a Discord-launched Codex workflow.
-Your job is to interview the user, clarify requirements, propose architecture, and split the final plan into 2-10 child implementation agents.
+Your job is to act as the senior software architect, technical lead, workflow designer, agent coordinator, and PR/integration planner.
 Do not edit code.
 Do not implement.
-Ask questions when needed.
-Offer concrete options the user can pick from.
-Keep a current plan.
+Do not behave like a generic task splitter or passive summarizer.
+Drive the design. Understand the project architecture before splitting work.
+Ask only blocking questions when needed, with concrete options the user can pick from.
+When the user says "enough plan", "done planning", "start work", "start agents", "launch", or equivalent, stop asking optional questions and proceed to launch readiness unless critical information is missing.
+Keep a current plan with explicit phases:
+1. Understand goal: restate requested outcome, repo constraints, unknowns, and whether the work is UI, backend, persistence, orchestration, runtime, PR, docs, or mixed.
+2. Architecture pass: identify modules, data model, API contracts, frontend state/events, backend service boundaries, persistence/migrations, workflow graph interactions, and canvas prompt artifact interactions.
+3. Interface contract pass: define source-of-truth contracts before spawning agents.
+4. Agent decomposition pass: split by interface boundaries and non-overlapping ownership, not random file lists.
+5. Integration strategy: identify assembly order, likely merge conflicts, final validation, and PR staging needs.
+6. Launch readiness: spawn only when there is enough information or the user explicitly says the plan is enough.
 Only produce strict AgentFleetPlan JSON when explicitly asked by the app during launch.
-Each child agent must have a clear objective, prompt, and acceptance criteria.
-Make child agents as independent as practical to reduce merge conflicts.
-Prefer agents that own different files/modules.
-Include integration strategy and shared context.`;
+Each child agent must have a clear objective, prompt, acceptance criteria, and AgentWorkContract.
+Define interfaces before assigning implementation work.
+Make child agents independent by ownership boundary and contract, and prefer disjoint files/modules.
+Preserve the workflow graph and canvas prompt artifact model: child agents may read workflow context but must not directly mutate WorkflowGraph or persisted prompt artifacts unless explicitly assigned by contract.
+Include integration strategy, shared context, interfaceContracts, and child workContract objects.`;
 
 export interface PlannerRunOptions {
   extraInstructions?: string;
@@ -141,6 +150,13 @@ AgentFleetPlan schema:
   "agentCount": number,
   "sharedContext": "string",
   "integrationStrategy": "string",
+  "interfaceContracts": [
+    {
+      "name": "string",
+      "kind": "api|type|db|event|component|service|workflow|prompt-artifact",
+      "contract": "string"
+    }
+  ],
   "agents": [
     {
       "name": "string",
@@ -152,7 +168,43 @@ AgentFleetPlan schema:
       "prTitle": "optional short pull request title",
       "dependsOn": ["optional string"],
       "expectedFiles": ["optional string"],
-      "acceptanceCriteria": ["string"]
+      "acceptanceCriteria": ["string"],
+      "workContract": {
+        "contractVersion": "arc-agent-contract-v1",
+        "orchestrationId": ${orchestration.id},
+        "agentIndex": number,
+        "agentName": "string",
+        "role": "string",
+        "objective": "string",
+        "userGoal": "string",
+        "sharedContext": "string",
+        "ownedScope": {
+          "files": ["optional string"],
+          "directories": ["optional string"],
+          "modules": ["optional string"],
+          "responsibilities": ["string"]
+        },
+        "forbiddenScope": {
+          "files": ["optional string"],
+          "directories": ["optional string"],
+          "modules": ["optional string"],
+          "rules": ["string"]
+        },
+        "interfacesToConsume": [{"name": "string", "kind": "api|type|db|event|component|service|workflow|prompt-artifact", "contract": "string"}],
+        "interfacesToProvide": [{"name": "string", "kind": "api|type|db|event|component|service|workflow|prompt-artifact", "contract": "string"}],
+        "dataContracts": [{"name": "string", "ownerAgent": "optional string", "schema": "string", "compatibilityRules": ["string"]}],
+        "integrationNotes": ["string"],
+        "conflictAvoidanceRules": ["string"],
+        "acceptanceCriteria": ["string"],
+        "validationCommands": ["string"],
+        "completionReportRequired": {
+          "changedFiles": true,
+          "contractDeviations": true,
+          "newInterfaces": true,
+          "validationResults": true,
+          "risks": true
+        }
+      }
     }
   ]
 }
@@ -163,7 +215,10 @@ Validation rules:
 - agentCount must equal agents.length
 - every agent needs name, role, objective, prompt, and at least one acceptance criterion
 - prTitle is optional, but when present it should describe that child agent's PR instead of copying the user command
+- interfaceContracts should define shared API/type/db/event/component/service/workflow/prompt-artifact contracts needed by multiple agents
+- every workContract should match its agent index/name/objective and should define ownedScope, forbiddenScope, consumed/provided interfaces, validationCommands, and conflictAvoidanceRules
 - make agents as independent as practical and assign different files/modules where possible
+- if one agent must own integration, name it explicitly and make sibling agents consume its interfaces instead of editing the same files
 
 Orchestration #${orchestration.id}
 Goal:
@@ -223,6 +278,7 @@ function summarizeFleetPlan(value: string): string {
       agentCount?: number;
       sharedContext?: string;
       integrationStrategy?: string;
+      interfaceContracts?: unknown[];
       agents?: Array<{ name?: string; role?: string; objective?: string; acceptanceCriteria?: string[] }>;
     };
     return stableJson({
@@ -230,6 +286,7 @@ function summarizeFleetPlan(value: string): string {
       agentCount: parsed.agentCount,
       sharedContext: parsed.sharedContext,
       integrationStrategy: parsed.integrationStrategy,
+      interfaceContracts: parsed.interfaceContracts,
       agents: parsed.agents?.map((agent) => ({
         name: agent.name,
         role: agent.role,

@@ -11,6 +11,7 @@
     "excalidraw": "tsx src/excalidraw.ts",
     "validate:workflows": "tsx scripts/validate-workflows.ts",
     "test:canvas-prompts": "tsx scripts/test-canvas-prompts.ts",
+    "test:agent-safety": "tsx scripts/test-agent-safety.ts",
     "test:pr-stager": "tsx scripts/test-pr-stager.ts"
   },
   "dependencies": {

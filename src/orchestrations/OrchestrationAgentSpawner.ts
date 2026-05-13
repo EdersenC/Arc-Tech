@@ -2,6 +2,8 @@ import type { TaskService } from "../tasks/TaskService.js";
 import type { TaskStore } from "../stores.js";
 import { DEFAULT_MODEL, type Effort, type Task } from "../types.js";
 import { AgentFleetPlanValidator } from "./AgentFleetPlanValidator.js";
+import { agentSafetyInstructions } from "./AgentSafetyInstructions.js";
+import { agentWorkContract, formatAgentWorkContract, sharedInterfaceContractText } from "./AgentWorkContract.js";
 import type { OrchestrationAgentsRepo } from "./repos/OrchestrationAgentsRepo.js";
 import type { OrchestrationsRepo } from "./repos/OrchestrationsRepo.js";
 import { OrchestrationStatusRenderer } from "./OrchestrationStatusRenderer.js";
@@ -131,6 +133,7 @@ export class OrchestrationAgentSpawner {
     index: number,
     branchName: string,
   ): string {
+    const contract = agentWorkContract(orchestration, fleetPlan, agent, index);
     return `You are child implementation agent ${index} for orchestration #${orchestration.id}.
 
 Agent name:
@@ -148,6 +151,9 @@ ${fleetPlan.sharedContext}
 Integration strategy:
 ${fleetPlan.integrationStrategy}
 
+Shared interface contracts:
+${sharedInterfaceContractText(fleetPlan.interfaceContracts)}
+
 Depends on:
 ${agent.dependsOn?.length ? agent.dependsOn.join("\n") : "None"}
 
@@ -163,11 +169,18 @@ ${agent.acceptanceCriteria.map((criterion) => `- ${criterion}`).join("\n")}
 Branch:
 ${branchName}
 
-Detailed prompt:
+AgentWorkContract JSON:
+${formatAgentWorkContract(contract)}
+
+Assigned implementation instructions:
 ${agent.prompt}
+
+${agentSafetyInstructions()}
 
 Rules:
 - Work only on your assigned objective.
+- Treat AgentWorkContract as the source of truth for owned scope, forbidden scope, interfaces, validation, and completion reporting.
+- If implementation requires changing forbidden scope or shared interfaces, request approval with the matching safety skill before making the risky change.
 - Avoid unrelated refactors.
 - Keep changes mergeable with sibling agents.
 - Do not modify files outside your scope unless necessary.
@@ -187,6 +200,8 @@ Rules:
   "risks": ["known risk or empty if none"],
   "followUps": ["follow-up or empty if none"],
   "reviewFocus": ["what reviewers should inspect"],
+  "contractDeviations": ["contract deviation or empty if none"],
+  "newInterfaces": ["new or changed interface or empty if none"],
   "prTitle": "short pull request title"
 }
 \`\`\`

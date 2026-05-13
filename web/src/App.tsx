@@ -20,6 +20,7 @@ import {
   remakeOrchestrationPlan,
   updateCanvasPrompt,
   updateOrchestrationPlan,
+  updateOrchestrationSafetyRecord,
   updateCardPosition,
   type ArcCard,
   type ArcCanvasPromptBundle,
@@ -28,6 +29,8 @@ import {
   type ArcCanvasPromptNode,
   type ArcCanvasPromptTargetKind,
   type ArcLink,
+  type ArcOrchestrationSafetyRecord,
+  type ArcOrchestrationSafetyStatus,
   type ArcOrchestrationView,
   type ArcPlannerQuestionView,
   type ArcProject,
@@ -726,6 +729,22 @@ export default function App() {
     }
   }
 
+  async function handleSafetyStatus(recordId: number, status: ArcOrchestrationSafetyStatus) {
+    if (!orchestrationDetail) return;
+    setChatBusy(true);
+    setError(null);
+    try {
+      await updateOrchestrationSafetyRecord(recordId, status);
+      const detail = await loadOrchestrationDetail(orchestrationDetail.orchestration.id);
+      setStatus(`Marked safety record #${recordId} ${status}`);
+      setOrchestrationDetail(detail);
+    } catch (safetyError) {
+      setError(safetyError instanceof Error ? safetyError.message : String(safetyError));
+    } finally {
+      setChatBusy(false);
+    }
+  }
+
   async function runOrchestrationLaunch(orchestrationId: number, sourceCard?: ArcCard | null) {
     const detail =
       orchestrationDetail?.orchestration.id === orchestrationId
@@ -1386,6 +1405,7 @@ export default function App() {
             onUpdatePlan={handleUpdateSelectedPlan}
             onRemakePlan={handleRemakeSelectedPlan}
             onLaunch={handleLaunchSelectedOrchestration}
+            onSafetyStatus={handleSafetyStatus}
             onOpenTask={(taskId) => {
               const card = cardsRef.current.find((candidate) => candidate.taskId === taskId);
               selectCard(card?.id ?? null);
@@ -1461,6 +1481,7 @@ function OrchestrationSidebar(props: {
   onUpdatePlan: () => void;
   onRemakePlan: () => void;
   onLaunch: () => void;
+  onSafetyStatus: (recordId: number, status: ArcOrchestrationSafetyStatus) => void;
   onOpenTask: (taskId: number) => void;
   onClose: () => void;
 }) {
@@ -1471,6 +1492,7 @@ function OrchestrationSidebar(props: {
   const canSpawn = orchestrationReadyForSpawn(orchestration.status);
   const canPreparePlan = orchestrationCanPreparePlan(orchestration.status);
   const workflowPatch = orchestration.latestWorkflowPatch;
+  const safety = detail.safety ?? [];
   return (
     <aside className="task-sidebar orchestration-sidebar">
       <div className="sidebar-header">
@@ -1584,6 +1606,127 @@ function OrchestrationSidebar(props: {
           Reply to Planner
         </button>
       </div>
+      <SafetySection
+        title="Needs Action"
+        records={safety.filter((record) => record.needsOrchestratorAction || record.needsUserAction)}
+        chatBusy={props.chatBusy}
+        onStatus={props.onSafetyStatus}
+      />
+      <SafetySection
+        title="Context Query History"
+        records={safety.filter((record) => record.kind === "query_project_context" || record.kind === "query_contract")}
+        chatBusy={props.chatBusy}
+        onStatus={props.onSafetyStatus}
+      />
+      <SafetySection
+        title="Plan History Requests"
+        records={safety.filter((record) => record.kind === "query_plan_history")}
+        chatBusy={props.chatBusy}
+        onStatus={props.onSafetyStatus}
+      />
+      <SafetySection
+        title="User Decisions"
+        records={safety.filter((record) => record.kind === "query_user_decisions")}
+        chatBusy={props.chatBusy}
+        onStatus={props.onSafetyStatus}
+      />
+      <SafetySection
+        title="Prompt Artifact Context"
+        records={safety.filter((record) => record.kind === "query_prompt_artifacts")}
+        chatBusy={props.chatBusy}
+        onStatus={props.onSafetyStatus}
+      />
+      <SafetySection
+        title="Validation Results"
+        records={safety.filter((record) => record.kind === "report_validation_result")}
+        chatBusy={props.chatBusy}
+        onStatus={props.onSafetyStatus}
+      />
+      <SafetySection
+        title="Failed Validation Alerts"
+        records={safety.filter((record) => record.kind === "report_validation_result" && record.needsOrchestratorAction)}
+        chatBusy={props.chatBusy}
+        onStatus={props.onSafetyStatus}
+      />
+      <SafetySection
+        title="Integration Handoffs"
+        records={safety.filter((record) => record.kind === "handoff_to_integration")}
+        chatBusy={props.chatBusy}
+        onStatus={props.onSafetyStatus}
+      />
+      <SafetySection
+        title="Retry / Reassignment / Abort"
+        records={safety.filter((record) =>
+          record.kind === "request_retry" || record.kind === "request_reassignment" || record.kind === "abort_with_reason"
+        )}
+        chatBusy={props.chatBusy}
+        onStatus={props.onSafetyStatus}
+      />
+      <SafetySection
+        title="Scope Change Requests"
+        records={safety.filter((record) => record.kind === "request_scope_change")}
+        chatBusy={props.chatBusy}
+        onStatus={props.onSafetyStatus}
+      />
+      <SafetySection
+        title="Interface Change Requests"
+        records={safety.filter((record) => record.kind === "request_interface_change")}
+        chatBusy={props.chatBusy}
+        onStatus={props.onSafetyStatus}
+      />
+      <SafetySection
+        title="Contract Deviations"
+        records={safety.filter((record) => record.kind === "report_contract_deviation")}
+        chatBusy={props.chatBusy}
+        onStatus={props.onSafetyStatus}
+      />
+      <SafetySection
+        title="Assumptions"
+        records={safety.filter((record) => record.kind === "declare_assumption")}
+        chatBusy={props.chatBusy}
+        onStatus={props.onSafetyStatus}
+      />
+      <SafetySection
+        title="Risk Register"
+        records={safety.filter((record) => record.kind === "risk_register_update")}
+        chatBusy={props.chatBusy}
+        onStatus={props.onSafetyStatus}
+      />
+      <SafetySection
+        title="Dependencies"
+        records={safety.filter((record) => record.kind === "notify_dependency_ready" || record.kind === "request_dependency_status")}
+        chatBusy={props.chatBusy}
+        onStatus={props.onSafetyStatus}
+      />
+      <SafetySection
+        title="Coordination"
+        records={safety.filter((record) =>
+          record.kind === "sync_with_orchestrator" || record.kind === "request_peer_coordination" || record.kind === "request_test_help"
+        )}
+        chatBusy={props.chatBusy}
+        onStatus={props.onSafetyStatus}
+      />
+      <div className="sidebar-section safety-section">
+        <h3>Contract Revisions</h3>
+        {detail.contractRevisions?.length ? (
+          <div className="history-list">
+            {detail.contractRevisions.map((revision) => (
+              <div className="safety-record" key={`contract-revision-${revision.id}`}>
+                <div className="safety-record-header">
+                  <strong>{revision.summary}</strong>
+                  <span className="safety-pill">{revision.revisionKind}</span>
+                </div>
+                <div className="safety-meta">
+                  <span>{revision.createdAt}</span>
+                  {revision.safetyRecordId ? <span>Safety #{revision.safetyRecordId}</span> : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p>No contract revisions recorded.</p>
+        )}
+      </div>
       <div className="sidebar-section">
         <h3>Planning History</h3>
         <div className="history-list">
@@ -1596,6 +1739,59 @@ function OrchestrationSidebar(props: {
         </div>
       </div>
     </aside>
+  );
+}
+
+function SafetySection(props: {
+  title: string;
+  records: ArcOrchestrationSafetyRecord[];
+  chatBusy: boolean;
+  onStatus: (recordId: number, status: ArcOrchestrationSafetyStatus) => void;
+}) {
+  return (
+    <div className="sidebar-section safety-section">
+      <h3>{props.title}</h3>
+      {props.records.length ? (
+        <div className="history-list">
+          {props.records.map((record) => (
+            <div className="safety-record" key={`${props.title}-${record.id}`}>
+              <div className="safety-record-header">
+                <strong>{record.title}</strong>
+                <span className={`safety-pill safety-${record.status}`}>{record.status}</span>
+              </div>
+              <div className="safety-meta">
+                <span>{record.kind}</span>
+                {record.severity ? <span>{record.severity}</span> : null}
+                {record.agentId ? <span>Agent #{record.agentId}</span> : null}
+                {record.taskId ? <span>Task #{record.taskId}</span> : null}
+                {record.needsUserAction ? <span>User action</span> : null}
+                {record.needsOrchestratorAction ? <span>Orchestrator action</span> : null}
+              </div>
+              {record.body ? <p>{record.body}</p> : null}
+              {record.status === "open" ? (
+                <div className="safety-actions">
+                  {(record.kind === "request_scope_change" || record.kind === "request_interface_change") ? (
+                    <>
+                      <button type="button" disabled={props.chatBusy} onClick={() => props.onStatus(record.id, "approved")}>
+                        Approve
+                      </button>
+                      <button type="button" disabled={props.chatBusy} onClick={() => props.onStatus(record.id, "denied")}>
+                        Deny
+                      </button>
+                    </>
+                  ) : null}
+                  <button type="button" disabled={props.chatBusy} onClick={() => props.onStatus(record.id, "resolved")}>
+                    Resolve
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p>No records.</p>
+      )}
+    </div>
   );
 }
 

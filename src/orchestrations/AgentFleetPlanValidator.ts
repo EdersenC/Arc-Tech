@@ -3,6 +3,61 @@ import type { Orchestration } from "./types.js";
 
 const roleSchema = z.enum(["planner", "implementer", "tester", "reviewer", "refactor", "docs"]);
 const effortSchema = z.enum(["low", "medium", "high"]);
+const interfaceKindSchema = z.enum(["api", "type", "db", "event", "component", "service", "workflow", "prompt-artifact"]);
+
+const interfaceContractSchema = z.object({
+  name: z.string().trim().min(1),
+  kind: interfaceKindSchema,
+  contract: z.string().trim().min(1),
+});
+
+const dataContractSchema = z.object({
+  name: z.string().trim().min(1),
+  ownerAgent: z.string().trim().min(1).optional(),
+  schema: z.string().trim().min(1),
+  compatibilityRules: z.array(z.string().trim().min(1)).default([]),
+});
+
+const ownedScopeSchema = z.object({
+  files: z.array(z.string().trim().min(1)).optional(),
+  directories: z.array(z.string().trim().min(1)).optional(),
+  modules: z.array(z.string().trim().min(1)).optional(),
+  responsibilities: z.array(z.string().trim().min(1)).min(1),
+});
+
+const forbiddenScopeSchema = z.object({
+  files: z.array(z.string().trim().min(1)).optional(),
+  directories: z.array(z.string().trim().min(1)).optional(),
+  modules: z.array(z.string().trim().min(1)).optional(),
+  rules: z.array(z.string().trim().min(1)).min(1),
+});
+
+const workContractSchema = z.object({
+  contractVersion: z.literal("arc-agent-contract-v1"),
+  orchestrationId: z.number().int(),
+  agentIndex: z.number().int().min(1),
+  agentName: z.string().trim().min(1),
+  role: z.string().trim().min(1),
+  objective: z.string().trim().min(1),
+  userGoal: z.string().trim().min(1),
+  sharedContext: z.string().trim().min(1),
+  ownedScope: ownedScopeSchema,
+  forbiddenScope: forbiddenScopeSchema,
+  interfacesToConsume: z.array(interfaceContractSchema).default([]),
+  interfacesToProvide: z.array(interfaceContractSchema).default([]),
+  dataContracts: z.array(dataContractSchema).default([]),
+  integrationNotes: z.array(z.string().trim().min(1)).default([]),
+  conflictAvoidanceRules: z.array(z.string().trim().min(1)).min(1),
+  acceptanceCriteria: z.array(z.string().trim().min(1)).min(1),
+  validationCommands: z.array(z.string().trim().min(1)).default([]),
+  completionReportRequired: z.object({
+    changedFiles: z.literal(true),
+    contractDeviations: z.literal(true),
+    newInterfaces: z.literal(true),
+    validationResults: z.literal(true),
+    risks: z.literal(true),
+  }),
+});
 
 export const agentFleetPlanSchema = z.object({
   orchestrationGoal: z.string().trim().min(1),
@@ -10,6 +65,7 @@ export const agentFleetPlanSchema = z.object({
   agentCount: z.number().int(),
   sharedContext: z.string().trim().min(1),
   integrationStrategy: z.string().trim().min(1),
+  interfaceContracts: z.array(interfaceContractSchema).optional(),
   agents: z
     .array(
       z.object({
@@ -23,6 +79,7 @@ export const agentFleetPlanSchema = z.object({
         dependsOn: z.array(z.string().trim().min(1)).optional(),
         expectedFiles: z.array(z.string().trim().min(1)).optional(),
         acceptanceCriteria: z.array(z.string().trim().min(1)).min(1),
+        workContract: workContractSchema.optional(),
       }),
     )
     .min(2)

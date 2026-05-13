@@ -14,6 +14,7 @@ import { PullRequestFeedbackWorker } from "./github/PullRequestFeedbackWorker.js
 import { OrchestrationPlannerService } from "./orchestrations/OrchestrationPlannerService.js";
 import { OrchestrationAgentsRepo } from "./orchestrations/repos/OrchestrationAgentsRepo.js";
 import { OrchestrationMessagesRepo } from "./orchestrations/repos/OrchestrationMessagesRepo.js";
+import { OrchestrationSafetyRepo } from "./orchestrations/repos/OrchestrationSafetyRepo.js";
 import { OrchestrationsRepo } from "./orchestrations/repos/OrchestrationsRepo.js";
 import { TaskProgressService } from "./progress/TaskProgressService.js";
 import { dropSudoPrivilegesForLocalServer } from "./runtimeUser.js";
@@ -34,6 +35,7 @@ const canvasPrompts = new CanvasPromptRepo(database.db);
 const orchestrations = new OrchestrationsRepo(database.db);
 const orchestrationAgents = new OrchestrationAgentsRepo(database.db);
 const orchestrationMessages = new OrchestrationMessagesRepo(database.db);
+const orchestrationSafety = new OrchestrationSafetyRepo(database.db);
 const pullRequestFeedback = new PullRequestFeedbackRepo(database.db);
 const workflowGraphs = new WorkflowGraphRepo(database.db);
 const workflowService = new WorkflowService(workflowGraphs);
@@ -45,7 +47,7 @@ const progress = new TaskProgressService(client, tasks);
 const router = new CodexEventRouter(tasks, progress);
 const githubPr = new GitHubPRService(git, config);
 const githubPrFeedback = new GitHubPRFeedbackService();
-const pump = new TaskMessagePump(client, projects, tasks, git, runner, router, progress, githubPr);
+const pump = new TaskMessagePump(client, projects, tasks, git, runner, router, progress, githubPr, orchestrationSafety);
 const taskService = new TaskService(projects, tasks, git);
 const implementService = new ImplementService(projects, tasks, git, taskService, pump);
 const planner = new OrchestrationPlannerService(orchestrations, orchestrationMessages, projects, git, runner);
@@ -72,6 +74,7 @@ const server = new ExcalidrawApiServer({
   orchestrations,
   orchestrationAgents,
   orchestrationMessages,
+  orchestrationSafety,
   planner,
   workflows: workflowService,
   workflowEvents,

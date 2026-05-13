@@ -324,6 +324,8 @@ export interface ArcOrchestrationView {
   borderCard: ArcCard | null;
   childCards: ArcCard[];
   questionCards?: ArcCard[];
+  safety?: ArcOrchestrationSafetyRecord[];
+  contractRevisions?: ArcOrchestrationContractRevision[];
   aggregate: {
     total: number;
     done: number;
@@ -332,6 +334,58 @@ export interface ArcOrchestrationView {
     branches: string[];
     prs: string[];
   };
+}
+
+export type ArcOrchestrationSafetyKind =
+  | "query_contract"
+  | "query_project_context"
+  | "query_plan_history"
+  | "query_user_decisions"
+  | "query_prompt_artifacts"
+  | "request_scope_change"
+  | "request_interface_change"
+  | "report_contract_deviation"
+  | "declare_assumption"
+  | "risk_register_update"
+  | "sync_with_orchestrator"
+  | "request_peer_coordination"
+  | "notify_dependency_ready"
+  | "request_dependency_status"
+  | "report_validation_result"
+  | "request_test_help"
+  | "handoff_to_integration"
+  | "request_retry"
+  | "request_reassignment"
+  | "abort_with_reason";
+
+export type ArcOrchestrationSafetyStatus = "open" | "approved" | "denied" | "resolved" | "superseded";
+
+export interface ArcOrchestrationSafetyRecord {
+  id: number;
+  orchestrationId: number;
+  agentId: number | null;
+  taskId: number | null;
+  kind: ArcOrchestrationSafetyKind;
+  status: ArcOrchestrationSafetyStatus;
+  title: string;
+  body: string;
+  severity: string | null;
+  needsOrchestratorAction: boolean;
+  needsUserAction: boolean;
+  payload: unknown;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+}
+
+export interface ArcOrchestrationContractRevision {
+  id: number;
+  orchestrationId: number;
+  safetyRecordId: number | null;
+  revisionKind: "scope" | "interface" | "contract";
+  summary: string;
+  payload: unknown;
+  createdAt: string;
 }
 
 export type ArcCanvasPromptCommandKind =
@@ -505,6 +559,19 @@ export async function sendOrchestrationMessage(orchestrationId: number, content:
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ content }),
+  });
+  return parseJsonResponse(response);
+}
+
+export async function updateOrchestrationSafetyRecord(
+  recordId: number,
+  status: ArcOrchestrationSafetyStatus,
+  body?: string,
+): Promise<ArcOrchestrationSafetyRecord> {
+  const response = await fetch(`/api/orchestration-safety/${encodeURIComponent(String(recordId))}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ status, body }),
   });
   return parseJsonResponse(response);
 }

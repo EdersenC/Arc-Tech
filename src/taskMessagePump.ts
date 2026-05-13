@@ -3,6 +3,9 @@ import { CodexProcessError, type CodexRunner } from "./codexRunner.js";
 import type { CodexEventRouter } from "./codex/CodexEventRouter.js";
 import type { GitManager } from "./git.js";
 import type { GitHubPRService } from "./github/GitHubPRService.js";
+import { parseAgentSafetyEvents, safetyEventNeedsOrchestrator } from "./orchestrations/AgentSafetyEvents.js";
+import { agentSafetyInstructions } from "./orchestrations/AgentSafetyInstructions.js";
+import type { OrchestrationSafetyRepo } from "./orchestrations/repos/OrchestrationSafetyRepo.js";
 import type { TaskProgressService } from "./progress/TaskProgressService.js";
 import type { ProjectStore, TaskStore } from "./stores.js";
 import { taskDisplayNumber, taskLabel } from "./taskLabels.js";
@@ -23,6 +26,7 @@ export class TaskMessagePump {
     private readonly router: CodexEventRouter,
     private readonly progress: TaskProgressService,
     private readonly githubPrService?: GitHubPRService,
+    private readonly orchestrationSafety?: OrchestrationSafetyRepo,
   ) {}
 
   get activeTasks(): ReadonlySet<number> {
@@ -129,6 +133,7 @@ export class TaskMessagePump {
           throw new Error(result.finalSummary);
         }
 
+        this.recordAgentSafetyEvents(task, result.finalSummary);
         const diffStat = await this.git.commitTaskChanges(task, `Codex task ${taskDisplayNumber(task)} follow-up`);
         const pullRequestUrl = await this.createPullRequestIfPossible(task, result.finalSummary, diffStat);
         const retainedPullRequestUrl = pullRequestUrl ?? task.pullRequestUrl ?? task.prUrl;
@@ -230,7 +235,7 @@ export class TaskMessagePump {
       return await this.githubPrService.createPrForTask(
         task,
         finalSummary,
-        `Codex task ${taskDisplayNumber(task)}`,
+        `Arc-Tech task ${taskDisplayNumber(task)}`,
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -238,6 +243,27 @@ export class TaskMessagePump {
       await this.progress.postError(task, `Task changes were committed locally, but PR creation failed:\n${message}`);
       return null;
     }
+  }
+
+  private recordAgentSafetyEvents(task: Task, finalSummary: string): void {
+    if (!this.orchestrationSafety || !task.parentOrchestrationId) return;
+    const events = parseAgentSafetyEvents(finalSummary);
+    if (!events.length) return;
+    for (const event of events) {
+      this.orchestrationSafety.create({
+        orchestrationId: task.parentOrchestrationId,
+        agentId: task.orchestrationAgentId,
+        taskId: task.id,
+        kind: event.kind,
+        title: event.title ?? event.kind.replace(/_/g, " "),
+        body: event.body ?? "",
+        severity: event.severity ?? null,
+        needsOrchestratorAction: safetyEventNeedsOrchestrator(event.kind, event.severity, event.payload),
+        needsUserAction: event.needsUserAction === true,
+        payload: event.payload,
+      });
+    }
+    console.log("Recorded agent safety events.", { taskId: task.id, count: events.length });
   }
 }
 
@@ -259,6 +285,8 @@ ${modeInstruction(task.mode)}
 
 Modify only this isolated task worktree. Stay on the current task branch.
 
+${agentSafetyInstructions()}
+
 Primary completion goal:
 - Finish the requested work in this isolated task worktree.
 - End with a concise human summary for the task thread.
@@ -271,6 +299,8 @@ Primary completion goal:
   "risks": ["known risk or empty if none"],
   "followUps": ["follow-up or empty if none"],
   "reviewFocus": ["what reviewers should inspect"],
+  "contractDeviations": ["contract deviation or empty if none"],
+  "newInterfaces": ["new or changed interface or empty if none"],
   "prTitle": "short pull request title"
 }
 \`\`\`
@@ -353,7 +383,9 @@ function buildRecoveryPrCompletion(summary: string): string {
   "followUps": [],
   "reviewFocus": [
     "Confirm the committed diff matches the intended task changes."
-  ]
+  ],
+  "contractDeviations": [],
+  "newInterfaces": []
 }
 \`\`\``;
 }

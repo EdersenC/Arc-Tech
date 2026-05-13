@@ -315,10 +315,38 @@ export class AppDatabase {
       );
       CREATE INDEX IF NOT EXISTS idx_canvas_prompt_links_project ON canvas_prompt_links(project_id, deleted_at, updated_at);
       CREATE INDEX IF NOT EXISTS idx_canvas_prompt_links_prompt ON canvas_prompt_links(prompt_node_id, deleted_at);
-      DROP INDEX IF EXISTS idx_canvas_prompt_links_one_active_prompt;
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_canvas_prompt_links_one_active_workflow_target
-        ON canvas_prompt_links(prompt_node_id)
-        WHERE deleted_at IS NULL AND link_kind IN ('workflow_dispatch', 'plan_control');
+      CREATE TABLE IF NOT EXISTS orchestration_safety_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        orchestration_id INTEGER NOT NULL REFERENCES orchestrations(id) ON DELETE CASCADE,
+        agent_id INTEGER REFERENCES orchestration_agents(id) ON DELETE SET NULL,
+        task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open',
+        title TEXT NOT NULL,
+        body TEXT NOT NULL DEFAULT '',
+        severity TEXT,
+        needs_orchestrator_action INTEGER NOT NULL DEFAULT 0,
+        needs_user_action INTEGER NOT NULL DEFAULT 0,
+        payload_json TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        resolved_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_orchestration_safety_records_orchestration
+        ON orchestration_safety_records(orchestration_id, status, kind, created_at);
+      CREATE INDEX IF NOT EXISTS idx_orchestration_safety_records_actions
+        ON orchestration_safety_records(needs_orchestrator_action, needs_user_action, status);
+      CREATE TABLE IF NOT EXISTS orchestration_contract_revisions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        orchestration_id INTEGER NOT NULL REFERENCES orchestrations(id) ON DELETE CASCADE,
+        safety_record_id INTEGER REFERENCES orchestration_safety_records(id) ON DELETE SET NULL,
+        revision_kind TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        payload_json TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_orchestration_contract_revisions_orchestration
+        ON orchestration_contract_revisions(orchestration_id, created_at);
     `);
     this.addColumns("canvas_prompt_links", [
       ["link_kind", "TEXT NOT NULL DEFAULT 'workflow_dispatch'"],

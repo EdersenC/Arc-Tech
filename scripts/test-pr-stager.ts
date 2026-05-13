@@ -138,17 +138,16 @@ No baseline comparison data provided.
 
 function testLeakRegression(): void {
   const task = fakeTask();
-  assert.throws(
-    () => stagePullRequest({
-      task,
-      agentOutput: `\`\`\`ARC_AGENT_COMPLETION_JSON
+  const staged = stagePullRequest({
+    task,
+    agentOutput: `\`\`\`ARC_AGENT_COMPLETION_JSON
 {"summary":["Uses /home/eddy/.arc-tech/excalidraw-workspaces/x"],"changes":["WorkflowGraph dump"],"verification":[],"risks":[],"followUps":[],"reviewFocus":[],"prTitle":"leaky"}
 \`\`\``,
-      diff: baseDiff,
-      fallbackTitle: "fallback",
-    }),
-    /leak detection|failed leak/i,
-  );
+    diff: baseDiff,
+    fallbackTitle: "fallback",
+  });
+  assert.equal(findPrLeaks(staged.body).length, 0);
+  assert.match(staged.body, /sanitized reviewer context/);
   assert.doesNotThrow(() => stagePullRequest({ task, agentOutput: cleanCompletionBlock, diff: baseDiff, fallbackTitle: "fallback" }));
 }
 

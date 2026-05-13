@@ -16,6 +16,9 @@ interface GitHubPullRequestResponse {
   html_url?: string | null;
 }
 
+const ARC_TECH_BOT_NAME = "Arc-Tech Bot";
+const ARC_TECH_BOT_EMAIL = "arc-tech-bot@example.local";
+
 export class GitManager {
   async ensureProjectRepo(project: Project): Promise<string> {
     await fs.mkdir(project.repoPath, { recursive: true });
@@ -28,8 +31,8 @@ export class GitManager {
       }
     }
 
-    await this.git(["config", "user.name", "Discord Codex Bot"], project.repoPath, { allowFailure: true });
-    await this.git(["config", "user.email", "discord-codex-bot@example.local"], project.repoPath, { allowFailure: true });
+    await this.git(["config", "user.name", ARC_TECH_BOT_NAME], project.repoPath, { allowFailure: true });
+    await this.git(["config", "user.email", ARC_TECH_BOT_EMAIL], project.repoPath, { allowFailure: true });
     if ((await this.git(["rev-parse", "--verify", "HEAD"], project.repoPath, { allowFailure: true })).exitCode !== 0) {
       await this.git(["commit", "--allow-empty", "-m", "Initial project workspace"], project.repoPath);
     }
@@ -65,8 +68,8 @@ export class GitManager {
     } else {
       await this.git(["worktree", "add", "-b", taskBranch, worktreePath, baseBranch], project.repoPath);
     }
-    await this.git(["config", "user.name", "Discord Codex Bot"], worktreePath, { allowFailure: true });
-    await this.git(["config", "user.email", "discord-codex-bot@example.local"], worktreePath, { allowFailure: true });
+    await this.git(["config", "user.name", ARC_TECH_BOT_NAME], worktreePath, { allowFailure: true });
+    await this.git(["config", "user.email", ARC_TECH_BOT_EMAIL], worktreePath, { allowFailure: true });
     await this.ensureWorktreeExclude(worktreePath, ".codex-tmp/");
     return { baseBranch, taskBranch, worktreePath };
   }
@@ -332,16 +335,20 @@ export class GitManager {
           title,
           "--body-file",
           bodyFile,
-          "--json",
-          "number,url",
         ],
         cwd,
       );
-      const parsed = JSON.parse(String(result.stdout || "{}")) as { number?: number; url?: string };
-      if (!parsed.number) {
-        throw new Error(`gh pr create did not return a PR number: ${String(result.stdout ?? "")}`);
+      const stdout = String(result.stdout || result.all || "").trim();
+      const url = parsePullRequestUrl(stdout);
+      const found = await this.findOpenPullRequest(repo, taskBranch, cwd);
+      if (found) {
+        return { number: found.number, html_url: found.html_url ?? url };
       }
-      return { number: parsed.number, html_url: parsed.url ?? null };
+      const number = url ? pullRequestNumberFromUrl(url) : null;
+      if (!number) {
+        throw new Error(`gh pr create did not return a PR URL: ${stdout}`);
+      }
+      return { number, html_url: url };
     });
   }
 
@@ -382,6 +389,18 @@ export class GitManager {
   private async removeCodexTempDir(worktreePath: string): Promise<void> {
     await fs.rm(path.join(worktreePath, ".codex-tmp"), { recursive: true, force: true });
   }
+}
+
+function parsePullRequestUrl(output: string): string | null {
+  const match = /https:\/\/github\.com\/[^\s]+\/pull\/\d+/i.exec(output);
+  return match?.[0] ?? null;
+}
+
+function pullRequestNumberFromUrl(url: string): number | null {
+  const value = /\/pull\/(\d+)(?:$|[/?#])/i.exec(url)?.[1];
+  if (!value) return null;
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : null;
 }
 
 export function parseNameStatus(output: string): Array<Pick<GitDiffFile, "path" | "status">> {
