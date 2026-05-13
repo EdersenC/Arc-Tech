@@ -15,6 +15,7 @@ Required graph fields:
 Node fields:
 - `id`: stable lowercase id.
 - `kind`: `goal`, `requirement`, `decision`, `system_component`, `frontend_component`, `backend_component`, `data_store`, `external_service`, `agent_task`, `milestone`, `risk`, `open_question`, or `note`.
+- Use `system_component` for broad modules, platforms, engines, game modules, and architecture blocks. Do not emit custom kinds such as `game_module` or `architecture`.
 - `status`: `proposed`, `active`, `in_progress`, `blocked`, `complete`, or `deprecated`.
 - `title`, optional `summary`, `body`, `tags`, `owner`.
 - `createdAt`, `updatedAt`.
@@ -22,6 +23,7 @@ Node fields:
 Edge fields:
 - `id`: stable lowercase id.
 - `kind`: `depends_on`, `implements`, `contains`, `blocks`, `relates_to`, `replaces`, `answers`, `mitigates`, `produces`, or `consumes`.
+- Use `contains` for decomposition, `depends_on` for "enabled by", and `implements` for implementation relationships. Do not emit custom kinds such as `decomposes_into` or `enabled_by`.
 - `fromNodeId`, `toNodeId`.
 - Optional `label`, `status`, replacement/deprecation fields.
 - `createdAt`, `updatedAt`.

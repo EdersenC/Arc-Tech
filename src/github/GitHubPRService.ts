@@ -1,6 +1,7 @@
 import type { GitManager } from "../git.js";
 import type { AppConfig } from "../config.js";
 import type { Task } from "../types.js";
+import { stagePullRequest } from "../pr-stager/PrStager.js";
 
 export class GitHubPRService {
   constructor(
@@ -12,11 +13,13 @@ export class GitHubPRService {
     return this.config.githubPrEnabled;
   }
 
-  async createPrForTask(task: Task, title: string, body: string): Promise<string | null> {
+  async createPrForTask(task: Task, agentOutput: string, fallbackTitle: string): Promise<string | null> {
     if (!this.isEnabled()) {
       return null;
     }
-    return this.git.createTaskPullRequest(task, title, body, {
+    const diff = await this.git.getTaskPullRequestDiffFacts(task, { baseBranch: this.config.githubBaseBranch });
+    const staged = stagePullRequest({ task, agentOutput, diff, fallbackTitle });
+    return this.git.createTaskPullRequest(task, staged.title, staged.body, {
       baseBranch: this.config.githubBaseBranch,
       remote: this.config.githubRemote,
     });

@@ -1,3 +1,8 @@
+---
+name: arc-implementation-agent
+description: Use when acting as a child implementation agent spawned by an orchestration, with scoped worktree ownership, test expectations, and completion reporting.
+---
+
 # arc-implementation-agent
 
 Use this skill when you are a child implementation agent spawned by an orchestration.

@@ -46,6 +46,12 @@ export type WorkflowDecisionStatus = "proposed" | "accepted" | "superseded" | "d
 export type WorkflowRiskStatus = "open" | "mitigated" | "accepted" | "deprecated";
 export type WorkflowOpenQuestionStatus = "open" | "resolved" | "deprecated";
 
+export interface WorkflowQuestionOption {
+  id: string;
+  label: string;
+  description?: string;
+}
+
 export interface WorkflowLayoutHint {
   id: string;
   nodeId: string;
@@ -117,8 +123,13 @@ export interface WorkflowRisk {
 export interface WorkflowOpenQuestion {
   id: string;
   question: string;
+  detail?: string;
   status: WorkflowOpenQuestionStatus;
   answer?: string;
+  allowMultiSelect?: boolean;
+  options?: WorkflowQuestionOption[];
+  recommendedOptionIds?: string[];
+  recommendationRationale?: string;
   nodeIds?: string[];
   sourcePatchId?: string;
   createdAt: string;
@@ -165,6 +176,7 @@ export type WorkflowPatchOperation =
   | { op: "mark_deprecated"; targetType: WorkflowPatchTargetType; targetId: string; reason: string; replacementId?: string }
   | { op: "add_risk"; risk: WorkflowRisk }
   | { op: "add_open_question"; question: WorkflowOpenQuestion }
+  | { op: "update_open_question"; questionId: string; changes: WorkflowOpenQuestionPatch }
   | { op: "resolve_open_question"; questionId: string; answer: string }
   | { op: "relayout_section"; sectionId: string; hints: WorkflowLayoutHint[] };
 
@@ -198,6 +210,22 @@ export type WorkflowEdgePatch = Partial<
     | "deprecatedAt"
     | "deprecatedReason"
     | "replacementEdgeId"
+  >
+>;
+
+export type WorkflowOpenQuestionPatch = Partial<
+  Pick<
+    WorkflowOpenQuestion,
+    | "question"
+    | "detail"
+    | "status"
+    | "answer"
+    | "allowMultiSelect"
+    | "options"
+    | "recommendedOptionIds"
+    | "recommendationRationale"
+    | "nodeIds"
+    | "resolvedAt"
   >
 >;
 

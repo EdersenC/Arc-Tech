@@ -19,6 +19,14 @@ const optionalTextSchema = z.string().trim().min(1).optional();
 const textSchema = z.string().trim().min(1);
 const tagSchema = z.string().trim().min(1).max(80);
 
+const workflowQuestionOptionSchema = z
+  .object({
+    id: workflowStableIdSchema,
+    label: textSchema,
+    description: optionalTextSchema,
+  })
+  .strict();
+
 export const workflowLayoutHintSchema = z
   .object({
     id: workflowStableIdSchema,
@@ -101,8 +109,13 @@ export const workflowOpenQuestionSchema = z
   .object({
     id: workflowStableIdSchema,
     question: textSchema,
+    detail: optionalTextSchema,
     status: z.enum(["open", "resolved", "deprecated"]),
     answer: optionalTextSchema,
+    allowMultiSelect: z.boolean().optional(),
+    options: z.array(workflowQuestionOptionSchema).optional(),
+    recommendedOptionIds: z.array(workflowStableIdSchema).optional(),
+    recommendationRationale: optionalTextSchema,
     nodeIds: z.array(workflowStableIdSchema).optional(),
     sourcePatchId: workflowStableIdSchema.optional(),
     createdAt: timestampSchema,
@@ -178,6 +191,21 @@ const edgePatchSchema = z
   })
   .strict();
 
+const openQuestionPatchSchema = z
+  .object({
+    question: optionalTextSchema,
+    detail: optionalTextSchema,
+    status: z.enum(["open", "resolved", "deprecated"]).optional(),
+    answer: optionalTextSchema,
+    allowMultiSelect: z.boolean().optional(),
+    options: z.array(workflowQuestionOptionSchema).optional(),
+    recommendedOptionIds: z.array(workflowStableIdSchema).optional(),
+    recommendationRationale: optionalTextSchema,
+    nodeIds: z.array(workflowStableIdSchema).optional(),
+    resolvedAt: timestampSchema.optional(),
+  })
+  .strict();
+
 const workflowPatchOperationSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("create_graph"), graph: graphPayloadSchema }).strict(),
   z.object({ op: z.literal("add_node"), node: workflowNodeSchema }).strict(),
@@ -198,6 +226,7 @@ const workflowPatchOperationSchema = z.discriminatedUnion("op", [
     .strict(),
   z.object({ op: z.literal("add_risk"), risk: workflowRiskSchema }).strict(),
   z.object({ op: z.literal("add_open_question"), question: workflowOpenQuestionSchema }).strict(),
+  z.object({ op: z.literal("update_open_question"), questionId: workflowStableIdSchema, changes: openQuestionPatchSchema }).strict(),
   z.object({ op: z.literal("resolve_open_question"), questionId: workflowStableIdSchema, answer: textSchema }).strict(),
   z.object({ op: z.literal("relayout_section"), sectionId: workflowStableIdSchema, hints: z.array(workflowLayoutHintSchema) }).strict(),
 ]);
@@ -306,6 +335,13 @@ export function validateGraphIntegrity(graph: WorkflowGraph): WorkflowValidation
     for (const nodeId of question.nodeIds ?? []) {
       if (!nodeIds.has(nodeId)) {
         errors.push(`open question ${question.id} references missing node ${nodeId}.`);
+      }
+    }
+    const optionIds = new Set<string>();
+    collectDuplicateIds(`open question ${question.id} option`, question.options ?? [], optionIds, errors);
+    for (const recommendedOptionId of question.recommendedOptionIds ?? []) {
+      if (!optionIds.has(recommendedOptionId)) {
+        errors.push(`open question ${question.id} recommends missing option ${recommendedOptionId}.`);
       }
     }
   }

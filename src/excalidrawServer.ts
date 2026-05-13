@@ -48,7 +48,7 @@ const taskService = new TaskService(projects, tasks, git);
 const implementService = new ImplementService(projects, tasks, git, taskService, pump);
 const planner = new OrchestrationPlannerService(orchestrations, orchestrationMessages, projects, git, runner);
 const pullRequestFeedbackWorker = new PullRequestFeedbackWorker(
-  { enabled: config.githubPrFeedbackEnabled, pollMs: config.githubPrFeedbackPollMs },
+  { enabled: config.githubPrFeedbackEnabled, pollMs: config.githubPrFeedbackPollMs, idleMs: config.githubPrFeedbackIdleMs },
   client,
   tasks,
   orchestrations,
@@ -65,6 +65,7 @@ const server = new ExcalidrawApiServer({
   implementService,
   cards,
   feedback: pullRequestFeedback,
+  prFeedbackWorker: pullRequestFeedbackWorker,
   orchestrations,
   orchestrationAgents,
   orchestrationMessages,

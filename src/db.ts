@@ -244,6 +244,27 @@ export class AppDatabase {
       ["reaction_error", "TEXT"],
       ["reacted_at", "TEXT"],
     ]);
+    this.addColumns("tracked_pull_requests", [
+      ["last_feedback_at", "TEXT"],
+      ["polling_suspended_at", "TEXT"],
+      ["polling_suspended_reason", "TEXT"],
+    ]);
+    this.db.exec(`
+      UPDATE tracked_pull_requests
+      SET last_feedback_at = (
+        SELECT MAX(COALESCE(e.github_updated_at, e.github_created_at, e.created_at))
+        FROM pull_request_feedback_events e
+        WHERE e.tracked_pr_id = tracked_pull_requests.id
+      )
+      WHERE last_feedback_at IS NULL
+        AND EXISTS (
+          SELECT 1
+          FROM pull_request_feedback_events e
+          WHERE e.tracked_pr_id = tracked_pull_requests.id
+        );
+      CREATE INDEX IF NOT EXISTS idx_tracked_pull_requests_polling
+        ON tracked_pull_requests(state, polling_suspended_at, last_polled_at);
+    `);
   }
 
   private addColumns(table: string, columns: Array<[string, string]>): void {

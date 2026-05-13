@@ -22,6 +22,33 @@ Supported operations:
 - `resolve_open_question`
 - `relayout_section`
 
+`add_open_question` shape:
+
+```json
+{
+  "op": "add_open_question",
+  "question": {
+    "id": "question-visual-style",
+    "question": "Visual style?",
+    "detail": "Choose the first visual target so implementation agents can split work correctly.",
+    "status": "open",
+    "allowMultiSelect": false,
+    "options": [
+      {
+        "id": "option-visual-2d",
+        "label": "2D top-down",
+        "description": "Fastest to implement and test."
+      }
+    ],
+    "recommendedOptionIds": ["option-visual-2d"],
+    "recommendationRationale": "2D top-down is the safest first playable target.",
+    "nodeIds": ["node-question-visual-style"],
+    "createdAt": "2026-05-09T12:00:00.000Z",
+    "updatedAt": "2026-05-09T12:00:00.000Z"
+  }
+}
+```
+
 Patch rules:
 - Emit a patch only when graph semantics change.
 - Preserve unrelated nodes, edges, decisions, risks, and questions.
@@ -29,6 +56,10 @@ Patch rules:
 - Include downstream consequences: requirements, architecture, risks, tests, deployment, and agent-task changes.
 - Ask a question and emit no patch when the user input is materially ambiguous.
 - Never include raw Excalidraw scene fields such as `elements`, `appState`, `files`, `x`, `y`, `width`, or `height`.
+- Never put `nodeId`, `detail`, `options`, or `recommendedOptionIds` directly on an `add_open_question` operation. They belong inside `question`.
+- Never use option `title` or `summary`; use `label` and `description`.
+- Never put `createdAt`, `updatedAt`, `selectedOptionIds`, `selectedLabels`, or `sourcePatchId` inside `changes` for update operations.
+- User answer metadata is orchestration history, not workflow patch state. Resolve answered questions with `resolve_open_question`.
 
 Planner block format:
 

@@ -108,6 +108,36 @@ export interface PlannerQuestionAnswer {
   customText?: string;
 }
 
+export type PlannerQuestionSource = "planner" | "workflow";
+export type PlannerQuestionStatus = "open" | "answered" | "resolved" | "deprecated";
+
+export interface PlannerQuestionAnswerView {
+  selectedOptionIds: string[];
+  selectedLabels: string[];
+  customText?: string;
+  content: string;
+  createdAt: string;
+  source?: string;
+}
+
+export interface PlannerQuestionMessageView {
+  id: number;
+  role: OrchestrationMessage["role"];
+  content: string;
+  createdAt: string;
+}
+
+export interface PlannerQuestionView extends PlannerQuestion {
+  source: PlannerQuestionSource;
+  status: PlannerQuestionStatus;
+  answer: PlannerQuestionAnswerView | null;
+  workflowNodeId?: string;
+  detail?: string;
+  recommendedOptionIds?: string[];
+  recommendationRationale?: string;
+  messages: PlannerQuestionMessageView[];
+}
+
 export interface AgentFleetPlanAgent {
   name: string;
   role: AgentFleetRole;
@@ -134,4 +164,5 @@ export interface OrchestrationView {
   orchestration: Orchestration;
   agents: OrchestrationAgent[];
   messages: OrchestrationMessage[];
+  questions?: PlannerQuestionView[];
 }

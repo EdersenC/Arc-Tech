@@ -21,7 +21,10 @@ type TrackedPullRequestRow = {
   branch_name: string | null;
   state: TrackedPullRequest["state"];
   last_polled_at: string | null;
+  last_feedback_at: string | null;
   last_error: string | null;
+  polling_suspended_at: string | null;
+  polling_suspended_reason: string | null;
   created_at: string;
   updated_at: string;
   closed_at: string | null;
@@ -134,6 +137,7 @@ export class PullRequestFeedbackRepo {
         SELECT *
         FROM tracked_pull_requests
         WHERE state = 'open'
+          AND polling_suspended_at IS NULL
         ORDER BY COALESCE(datetime(last_polled_at), datetime(created_at)) ASC, id ASC
         LIMIT ?
       `,
@@ -142,10 +146,60 @@ export class PullRequestFeedbackRepo {
     return rows.map(mapTracked);
   }
 
+  listOpenByProject(projectId: number, includeSuspended = false, limit = 100): TrackedPullRequest[] {
+    return this.listOpenByScope("project_id = @projectId", { projectId }, includeSuspended, limit);
+  }
+
+  listOpenByOrchestration(orchestrationId: number, includeSuspended = false, limit = 100): TrackedPullRequest[] {
+    return this.listOpenByScope("parent_orchestration_id = @orchestrationId", { orchestrationId }, includeSuspended, limit);
+  }
+
+  resumePollingForProject(projectId: number): number {
+    return this.resumePolling("project_id = @projectId", { projectId });
+  }
+
+  resumePollingForTask(taskId: number): number {
+    return this.resumePolling("task_id = @taskId", { taskId });
+  }
+
+  resumePollingForOrchestration(orchestrationId: number): number {
+    return this.resumePolling("parent_orchestration_id = @orchestrationId", { orchestrationId });
+  }
+
   markPolled(id: number): void {
     this.db
       .prepare("UPDATE tracked_pull_requests SET last_polled_at = CURRENT_TIMESTAMP, last_error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
       .run(id);
+  }
+
+  markFeedbackReceived(id: number): void {
+    this.db
+      .prepare(
+        `
+        UPDATE tracked_pull_requests
+        SET last_feedback_at = CURRENT_TIMESTAMP,
+            polling_suspended_at = NULL,
+            polling_suspended_reason = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `,
+      )
+      .run(id);
+  }
+
+  suspendPolling(id: number, reason: string): void {
+    this.db
+      .prepare(
+        `
+        UPDATE tracked_pull_requests
+        SET polling_suspended_at = CURRENT_TIMESTAMP,
+            polling_suspended_reason = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+          AND polling_suspended_at IS NULL
+      `,
+      )
+      .run(reason, id);
   }
 
   markError(id: number, error: string): void {
@@ -280,7 +334,9 @@ export class PullRequestFeedbackRepo {
           COALESCE(SUM(CASE WHEN e.reaction_status = 'failed' THEN 1 ELSE 0 END), 0) AS reaction_failed,
           MAX(COALESCE(e.github_updated_at, e.github_created_at, e.created_at)) AS latest_feedback_at,
           MAX(e.delivered_at) AS latest_delivered_at,
-          MAX(t.last_error) AS last_error
+          MAX(t.last_error) AS last_error,
+          MAX(t.polling_suspended_at) AS polling_suspended_at,
+          MAX(t.polling_suspended_reason) AS polling_suspended_reason
         FROM pull_request_feedback_events e
         LEFT JOIN task_messages tm ON tm.id = e.delivered_task_message_id
         LEFT JOIN tracked_pull_requests t ON t.id = e.tracked_pr_id
@@ -299,6 +355,8 @@ export class PullRequestFeedbackRepo {
           latest_feedback_at: string | null;
           latest_delivered_at: string | null;
           last_error: string | null;
+          polling_suspended_at: string | null;
+          polling_suspended_reason: string | null;
         }
       | undefined;
     if (!row || row.total === 0) {
@@ -316,6 +374,8 @@ export class PullRequestFeedbackRepo {
       latestFeedbackAt: row.latest_feedback_at,
       latestDeliveredAt: row.latest_delivered_at,
       lastError: row.last_error,
+      pollingSuspendedAt: row.polling_suspended_at,
+      pollingSuspendedReason: row.polling_suspended_reason,
     };
   }
 
@@ -332,6 +392,40 @@ export class PullRequestFeedbackRepo {
       )
       .all(taskId, Math.max(1, Math.min(300, Math.floor(limit)))) as PullRequestFeedbackEventRow[];
     return rows.map(mapFeedback);
+  }
+
+  private listOpenByScope(whereClause: string, params: Record<string, unknown>, includeSuspended: boolean, limit: number): TrackedPullRequest[] {
+    const rows = this.db
+      .prepare(
+        `
+        SELECT *
+        FROM tracked_pull_requests
+        WHERE state = 'open'
+          AND ${whereClause}
+          AND (@includeSuspended = 1 OR polling_suspended_at IS NULL)
+        ORDER BY COALESCE(datetime(last_polled_at), datetime(created_at)) ASC, id ASC
+        LIMIT @limit
+      `,
+      )
+      .all({ ...params, includeSuspended: includeSuspended ? 1 : 0, limit: Math.max(1, Math.min(300, Math.floor(limit))) }) as TrackedPullRequestRow[];
+    return rows.map(mapTracked);
+  }
+
+  private resumePolling(whereClause: string, params: Record<string, unknown>): number {
+    const result = this.db
+      .prepare(
+        `
+        UPDATE tracked_pull_requests
+        SET polling_suspended_at = NULL,
+            polling_suspended_reason = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE state = 'open'
+          AND polling_suspended_at IS NOT NULL
+          AND ${whereClause}
+      `,
+      )
+      .run(params);
+    return result.changes;
   }
 }
 
@@ -370,7 +464,10 @@ function mapTracked(row: TrackedPullRequestRow): TrackedPullRequest {
     branchName: row.branch_name,
     state: row.state,
     lastPolledAt: row.last_polled_at,
+    lastFeedbackAt: row.last_feedback_at,
     lastError: row.last_error,
+    pollingSuspendedAt: row.polling_suspended_at,
+    pollingSuspendedReason: row.polling_suspended_reason,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     closedAt: row.closed_at,

@@ -40,8 +40,8 @@ export interface WorkflowLayoutOptions {
 
 const NODE_WIDTH = 300;
 const MIN_NODE_HEIGHT = 120;
-const COLUMN_GAP = 72;
-const ROW_GAP = 34;
+const COLUMN_GAP = 120;
+const ROW_GAP = 48;
 const SECTION_PAD = 26;
 const SECTION_TITLE_HEIGHT = 38;
 

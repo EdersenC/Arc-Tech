@@ -19,7 +19,7 @@ import { GitManager } from "./git.js";
 import { GitHubPRFeedbackService } from "./github/GitHubPRFeedbackService.js";
 import { GitHubPRService } from "./github/GitHubPRService.js";
 import { PullRequestFeedbackRepo } from "./github/PullRequestFeedbackRepo.js";
-import { PullRequestFeedbackWorker } from "./github/PullRequestFeedbackWorker.js";
+import { PullRequestFeedbackWorker, type PullRequestFeedbackPollResult } from "./github/PullRequestFeedbackWorker.js";
 import { OrchestrationAgentSpawner } from "./orchestrations/OrchestrationAgentSpawner.js";
 import { OrchestrationControlPanel } from "./orchestrations/OrchestrationControlPanel.js";
 import { OrchestrationPlannerService } from "./orchestrations/OrchestrationPlannerService.js";
@@ -113,7 +113,7 @@ const orchestrationResultCollector = new OrchestrationResultCollector(
   (orchestrationId) => orchestrationControlPanel.updateControlPanel(orchestrationId),
 );
 const pullRequestFeedbackWorker = new PullRequestFeedbackWorker(
-  { enabled: config.githubPrFeedbackEnabled, pollMs: config.githubPrFeedbackPollMs },
+  { enabled: config.githubPrFeedbackEnabled, pollMs: config.githubPrFeedbackPollMs, idleMs: config.githubPrFeedbackIdleMs },
   client,
   tasks,
   orchestrations,
@@ -186,6 +186,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (interaction.commandName === "status") {
       await handleStatus(interaction);
+      return;
+    }
+
+    if (interaction.commandName === "check-prs") {
+      await handleCheckPullRequests(interaction);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -428,6 +433,11 @@ async function handleThreadMessage(message: Message): Promise<void> {
     await pump.cancelTask(task);
     return;
   }
+  if (shortcut === "check_pr") {
+    const result = await pullRequestFeedbackWorker.resumeAndPoll({ taskId: task.id });
+    await message.reply(formatPrPollResult(`Task ${taskLabel(task)} PR check`, result));
+    return;
+  }
 
   if (task.status === "WAITING_REMOTE") {
     await handleRemoteReply(message, task, content);
@@ -465,6 +475,12 @@ async function handleOrchestrationThreadMessage(message: Message): Promise<void>
     return;
   }
 
+  if (isCheckPullRequestsMessage(content)) {
+    const result = await pullRequestFeedbackWorker.resumeAndPoll({ orchestrationId: orchestration.id });
+    await message.reply(formatPrPollResult(`Orchestration #${orchestration.id} PR check`, result));
+    return;
+  }
+
   if (orchestration.status === "CANCELED" || orchestration.status === "COMPLETED" || orchestration.status === "FAILED") {
     await message.reply(`Orchestration #${orchestration.id} is closed with status ${orchestration.status}.`);
     return;
@@ -493,6 +509,24 @@ async function handleOrchestrationThreadMessage(message: Message): Promise<void>
     await message.reply(truncate(`Planner failed:\n${text}`, 1900));
     await orchestrationControlPanel.updateControlPanel(orchestration.id);
   }
+}
+
+async function handleCheckPullRequests(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  if (!interaction.guildId) {
+    await interaction.editReply("This bot only tracks PR feedback in guild channels.");
+    return;
+  }
+
+  const projectChannel = await resolveProjectChannel(interaction);
+  const project = projects.getByGuildChannel(interaction.guildId, projectChannel.id);
+  if (!project) {
+    await interaction.editReply(`No project exists yet for #${projectChannel.name}.`);
+    return;
+  }
+
+  const result = await pullRequestFeedbackWorker.resumeAndPoll({ projectId: project.id });
+  await interaction.editReply(formatPrPollResult(`Project "${project.projectName}" PR check`, result));
 }
 
 async function resolveProjectChannel(interaction: ChatInputCommandInteraction): Promise<{ id: string; name: string }> {
@@ -798,6 +832,27 @@ function truncate(value: string, max: number): string {
 function oneLine(value: string, max: number): string {
   const compact = value.replace(/\s+/g, " ").trim();
   return compact.length <= max ? compact : `${compact.slice(0, max - 3)}...`;
+}
+
+function isCheckPullRequestsMessage(content: string): boolean {
+  const normalized = content.trim().toLowerCase();
+  return /^(check|poll)\s+prs?$/.test(normalized) || /^(check|poll)\s+pull\s+requests?$/.test(normalized);
+}
+
+function formatPrPollResult(title: string, result: PullRequestFeedbackPollResult): string {
+  if (!result.enabled) {
+    return `${title}: PR feedback polling is disabled. Set GITHUB_PR_FEEDBACK_ENABLED=true to enable it.`;
+  }
+  if (result.busy) {
+    return `${title}: a PR feedback poll is already running. Suspended PRs resumed: ${result.resumed}.`;
+  }
+  return `${title} complete.
+Tracked PRs checked: ${result.tracked}
+Suspended PRs resumed: ${result.resumed}
+New feedback items queued: ${result.feedbackEvents}
+Agent follow-ups queued: ${result.messagesQueued}
+PRs paused for idle polling: ${result.suspended}
+Errors: ${result.errors}`;
 }
 
 function isRetryMessage(content: string): boolean {

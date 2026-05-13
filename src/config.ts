@@ -14,6 +14,7 @@ export interface AppConfig {
   githubPrEnabled: boolean;
   githubPrFeedbackEnabled: boolean;
   githubPrFeedbackPollMs: number;
+  githubPrFeedbackIdleMs: number;
   githubBaseBranch: string;
   githubRemote: string;
   excalidrawHost: string;
@@ -37,7 +38,8 @@ export function loadConfig(options: { requireDiscord?: boolean } = {}): AppConfi
     enableMessageContentIntent: booleanEnv("ENABLE_MESSAGE_CONTENT_INTENT", false),
     githubPrEnabled: booleanEnv("GITHUB_PR_ENABLED", false),
     githubPrFeedbackEnabled: booleanEnv("GITHUB_PR_FEEDBACK_ENABLED", booleanEnv("GITHUB_PR_ENABLED", false)),
-    githubPrFeedbackPollMs: numberEnv("GITHUB_PR_FEEDBACK_POLL_MS", 60_000),
+    githubPrFeedbackPollMs: numberEnv("GITHUB_PR_FEEDBACK_POLL_MS", 300_000),
+    githubPrFeedbackIdleMs: numberEnv("GITHUB_PR_FEEDBACK_IDLE_MS", 3_600_000),
     githubBaseBranch: process.env.GITHUB_BASE_BRANCH || "main",
     githubRemote: process.env.GITHUB_REMOTE || "origin",
     excalidrawHost: process.env.EXCALIDRAW_HOST || "127.0.0.1",

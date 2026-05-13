@@ -13,7 +13,10 @@ export interface TrackedPullRequest {
   branchName: string | null;
   state: "open" | "closed" | "merged" | "unknown";
   lastPolledAt: string | null;
+  lastFeedbackAt: string | null;
   lastError: string | null;
+  pollingSuspendedAt: string | null;
+  pollingSuspendedReason: string | null;
   createdAt: string;
   updatedAt: string;
   closedAt: string | null;
@@ -72,4 +75,6 @@ export interface PullRequestFeedbackSummary {
   latestFeedbackAt: string | null;
   latestDeliveredAt: string | null;
   lastError: string | null;
+  pollingSuspendedAt: string | null;
+  pollingSuspendedReason: string | null;
 }

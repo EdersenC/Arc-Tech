@@ -196,6 +196,14 @@ function applyOperation(graph: WorkflowGraph, operation: WorkflowPatchOperation,
       }
       return { ...graph, openQuestions: [...graph.openQuestions, stampOpenQuestion(operation.question, patch)] };
 
+    case "update_open_question":
+      return replaceOpenQuestion(graph, operation.questionId, (question) => {
+        for (const nodeId of operation.changes.nodeIds ?? []) {
+          assertNodeExists(graph, nodeId, `open question ${operation.questionId} nodeIds`);
+        }
+        return { ...question, ...operation.changes, updatedAt: patch.createdAt };
+      });
+
     case "resolve_open_question":
       return replaceOpenQuestion(graph, operation.questionId, (question) => ({
         ...question,

@@ -12,6 +12,8 @@ import {
 } from "./workflowIds";
 import { layoutWorkflowGraph, type WorkflowAvoidRect, type WorkflowLayoutOptions } from "./workflowLayout";
 
+const FONT_FAMILY = { Helvetica: 2 } as const;
+
 export interface WorkflowElementOptions extends WorkflowLayoutOptions {
   persisted: ArcPersistedWorkflowGraph;
   avoidRects?: WorkflowAvoidRect[];
@@ -68,7 +70,7 @@ export function graphToExcalidrawElements(graph: ArcWorkflowGraph, options: Work
       height: 24,
       text: section.title,
       fontSize: 16,
-      fontFamily: 1,
+      fontFamily: FONT_FAMILY.Helvetica,
       strokeColor: "#334155",
       backgroundColor: "transparent",
       locked: true,
@@ -80,19 +82,15 @@ export function graphToExcalidrawElements(graph: ArcWorkflowGraph, options: Work
     const from = layout.nodes.get(edge.fromNodeId);
     const to = layout.nodes.get(edge.toNodeId);
     if (!from || !to) continue;
-    const start = { x: from.x + from.width, y: from.y + from.height / 2 };
-    const end = { x: to.x, y: to.y + to.height / 2 };
+    const route = edgeRoute(from, to);
     elements.push({
       id: workflowEdgeElementId(graph.id, edge.id),
       type: "arrow",
-      x: start.x,
-      y: start.y,
-      width: Math.max(24, end.x - start.x),
-      height: end.y - start.y,
-      points: [
-        [0, 0],
-        [Math.max(24, end.x - start.x), end.y - start.y],
-      ],
+      x: route.x,
+      y: route.y,
+      width: route.width,
+      height: route.height,
+      points: route.points,
       strokeColor: edgeColor(edge),
       backgroundColor: "transparent",
       roughness: 0,
@@ -104,13 +102,13 @@ export function graphToExcalidrawElements(graph: ArcWorkflowGraph, options: Work
       elements.push({
         id: workflowEdgeLabelElementId(graph.id, edge.id),
         type: "text",
-        x: start.x + Math.max(22, (end.x - start.x) / 2 - 42),
-        y: start.y + (end.y - start.y) / 2 - 18,
+        x: route.labelX,
+        y: route.labelY,
         width: 120,
         height: 22,
         text: edge.label || edge.kind,
         fontSize: 12,
-        fontFamily: 1,
+        fontFamily: FONT_FAMILY.Helvetica,
         strokeColor: "#475569",
         backgroundColor: "#f8fafc",
         locked: true,
@@ -136,26 +134,32 @@ export function graphToExcalidrawElements(graph: ArcWorkflowGraph, options: Work
       roughness: 0,
       opacity: 100,
       roundness: { type: 3 },
+      boundElements: [{ type: "text", id: workflowNodeLabelElementId(graph.id, node.id) }],
       groupIds: [groupId],
-      locked: true,
       customData: { arcWorkflow: metadata(persisted, "node", { workflowNodeId: node.id }) },
     });
+    const labelWidth = box.width - 32;
+    const labelHeight = box.height - 48;
+    const labelText = fitCanvasText(nodeText(node), labelWidth, labelHeight, 15);
     elements.push({
       id: workflowNodeLabelElementId(graph.id, node.id),
       type: "text",
       x: box.x + 16,
       y: box.y + 18,
-      width: box.width - 32,
-      height: box.height - 42,
-      text: nodeText(node),
+      width: labelWidth,
+      height: labelHeight,
+      text: labelText,
+      originalText: labelText,
       fontSize: 15,
-      fontFamily: 1,
+      fontFamily: FONT_FAMILY.Helvetica,
+      containerId: workflowNodeElementId(graph.id, node.id),
+      autoResize: false,
+      lineHeight: 1.25,
       textAlign: "left",
       verticalAlign: "top",
       strokeColor: "#0f172a",
       backgroundColor: "transparent",
       groupIds: [groupId],
-      locked: true,
       customData: { arcWorkflow: metadata(persisted, "node_label", { workflowNodeId: node.id }) },
     });
     elements.push({
@@ -167,13 +171,12 @@ export function graphToExcalidrawElements(graph: ArcWorkflowGraph, options: Work
       height: 18,
       text: `${node.kind} · ${node.status}`,
       fontSize: 12,
-      fontFamily: 1,
+      fontFamily: FONT_FAMILY.Helvetica,
       textAlign: "left",
       verticalAlign: "top",
       strokeColor: statusColor(node.status),
       backgroundColor: "transparent",
       groupIds: [groupId],
-      locked: true,
       customData: { arcWorkflow: metadata(persisted, "status_badge", { workflowNodeId: node.id }) },
     });
   }
@@ -181,6 +184,37 @@ export function graphToExcalidrawElements(graph: ArcWorkflowGraph, options: Work
   return convertToExcalidrawElements(elements as Parameters<typeof convertToExcalidrawElements>[0], {
     regenerateIds: false,
   }) as readonly WorkflowExcalidrawElement[];
+}
+
+function edgeRoute(
+  from: { x: number; y: number; width: number; height: number },
+  to: { x: number; y: number; width: number; height: number },
+): { x: number; y: number; width: number; height: number; points: number[][]; labelX: number; labelY: number } {
+  const forward = to.x >= from.x;
+  const start = forward
+    ? { x: from.x + from.width, y: from.y + from.height / 2 }
+    : { x: from.x, y: from.y + from.height / 2 };
+  const end = forward
+    ? { x: to.x, y: to.y + to.height / 2 }
+    : { x: to.x + to.width, y: to.y + to.height / 2 };
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const elbowX = Math.abs(dx) >= 72 ? dx / 2 : dx >= 0 ? 36 : -36;
+  const points = [
+    [0, 0],
+    [elbowX, 0],
+    [elbowX, dy],
+    [dx, dy],
+  ];
+  return {
+    x: start.x,
+    y: start.y,
+    width: dx,
+    height: dy,
+    points,
+    labelX: start.x + elbowX - 42,
+    labelY: start.y + dy / 2 - 18,
+  };
 }
 
 function metadata(
@@ -200,6 +234,46 @@ function metadata(
 
 function nodeText(node: ArcWorkflowNode): string {
   return [node.title, node.summary, node.body].filter(Boolean).join("\n");
+}
+
+function fitCanvasText(text: string, width: number, height: number, fontSize: number): string {
+  const charsPerLine = Math.max(10, Math.floor(width / (fontSize * 0.55)));
+  const maxLines = Math.max(1, Math.floor(height / (fontSize * 1.25)));
+  const lines: string[] = [];
+  for (const rawLine of text.split("\n")) {
+    if (lines.length >= maxLines) break;
+    const words = rawLine.trim().split(/\s+/).filter(Boolean);
+    if (words.length === 0) {
+      lines.push("");
+      continue;
+    }
+    let current = "";
+    for (const word of words) {
+      if (!current) {
+        current = word;
+      } else if (`${current} ${word}`.length <= charsPerLine) {
+        current = `${current} ${word}`;
+      } else {
+        lines.push(current);
+        current = word;
+      }
+      while (current.length > charsPerLine) {
+        lines.push(current.slice(0, charsPerLine));
+        current = current.slice(charsPerLine);
+      }
+      if (lines.length >= maxLines) break;
+    }
+    if (lines.length < maxLines && current) {
+      lines.push(current);
+    }
+  }
+  if (lines.length === 0) return "";
+  const sourceHasMore = text.split("\n").length > lines.length || lines.join(" ").length < text.replace(/\s+/g, " ").trim().length;
+  if (sourceHasMore) {
+    const last = lines[lines.length - 1] ?? "";
+    lines[lines.length - 1] = `${last.slice(0, Math.max(0, charsPerLine - 3)).trimEnd()}...`;
+  }
+  return lines.join("\n");
 }
 
 function nodeStrokeColor(node: ArcWorkflowNode): string {

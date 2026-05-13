@@ -15,7 +15,7 @@ export class WorkflowService {
 
     const now = new Date().toISOString();
     const title = workflowTitle(goal);
-    const graph = starterWorkflowGraph(projectId, orchestrationId, goal, title, now);
+    const graph = emptyWorkflowGraph(projectId, orchestrationId, goal, title, now);
     return this.workflows.createGraph(projectId, orchestrationId, title, {
       ...graph,
     });
@@ -77,131 +77,20 @@ function workflowTitle(goal: string): string {
   return clean.length > 120 ? `${clean.slice(0, 117)}...` : clean;
 }
 
-function starterWorkflowGraph(projectId: number, orchestrationId: number, goal: string, title: string, now: string): WorkflowGraph {
-  const hasMultiplayer = /multiplayer|multi-player|online|p2p|peer/i.test(goal);
-  const hasGame = /game|snake|arcade|canvas|webgl|play/i.test(goal);
-  const nodes: WorkflowGraph["nodes"] = [
-    node(orchestrationId, "goal", "goal", title, "User-approved orchestration goal.", now, goal),
-    node(orchestrationId, "req-playable-experience", "requirement", hasGame ? "Playable game experience" : "User-facing deliverable", "Build the primary user-visible workflow requested by the orchestration.", now),
-    node(orchestrationId, "req-project-fit", "requirement", "Fit the existing project", "Inspect the selected repository and preserve current behavior unless a change is explicit.", now),
-    node(orchestrationId, "decision-architecture", "decision", "Architecture plan", "Track the main implementation decisions before agents spawn.", now),
-    node(orchestrationId, "frontend-game-loop", "frontend_component", hasGame ? "Frontend game loop" : "Frontend experience", "Owns interactive UI state, rendering, and user input.", now),
-    node(orchestrationId, "backend-networking", "backend_component", hasMultiplayer ? "Backend/networking" : "Backend services", "Owns server-side APIs, persistence, and runtime coordination.", now),
-    node(orchestrationId, "milestone-testing", "milestone", "Testing and validation", "Agents must run available build, test, and smoke checks.", now),
-    node(orchestrationId, "milestone-deployment", "milestone", "Deployment readiness", "Record deployment/runtime assumptions before final integration.", now),
-    node(orchestrationId, "question-runtime", "open_question", "Runtime constraints", "Clarify repo-specific runtime, deployment, and compatibility constraints.", now),
-  ];
-
-  if (hasMultiplayer) {
-    nodes.push(
-      node(orchestrationId, "decision-p2p-multiplayer", "decision", "P2P multiplayer", "Initial networking assumption until the user or planner replaces it.", now),
-      node(orchestrationId, "component-peer-discovery", "backend_component", "Peer discovery", "Finds peers for P2P game sessions.", now),
-      node(orchestrationId, "component-nat-traversal", "backend_component", "NAT traversal", "Allows peers behind routers to connect directly.", now),
-      node(orchestrationId, "component-host-migration", "backend_component", "Host migration", "Moves authority when the current P2P host disconnects.", now),
-      node(orchestrationId, "component-multiplayer-sync", "system_component", "Multiplayer synchronization", "Keeps game state synchronized across players.", now),
-    );
-  }
-
-  const edges: WorkflowGraph["edges"] = [
-    edge(orchestrationId, "goal-req-playable-experience", "contains", `goal-orchestration-${orchestrationId}`, `req-playable-experience-orchestration-${orchestrationId}`, now),
-    edge(orchestrationId, "goal-req-project-fit", "contains", `goal-orchestration-${orchestrationId}`, `req-project-fit-orchestration-${orchestrationId}`, now),
-    edge(orchestrationId, "frontend-game-loop-goal", "implements", `frontend-game-loop-orchestration-${orchestrationId}`, `goal-orchestration-${orchestrationId}`, now),
-    edge(orchestrationId, "backend-networking-goal", "implements", `backend-networking-orchestration-${orchestrationId}`, `goal-orchestration-${orchestrationId}`, now),
-    edge(orchestrationId, "testing-goal", "depends_on", `milestone-testing-orchestration-${orchestrationId}`, `goal-orchestration-${orchestrationId}`, now),
-    edge(orchestrationId, "deployment-goal", "depends_on", `milestone-deployment-orchestration-${orchestrationId}`, `goal-orchestration-${orchestrationId}`, now),
-  ];
-
-  if (hasMultiplayer) {
-    edges.push(
-      edge(orchestrationId, "p2p-decision-networking", "relates_to", `decision-p2p-multiplayer-orchestration-${orchestrationId}`, `backend-networking-orchestration-${orchestrationId}`, now),
-      edge(orchestrationId, "peer-discovery-p2p", "implements", `component-peer-discovery-orchestration-${orchestrationId}`, `decision-p2p-multiplayer-orchestration-${orchestrationId}`, now),
-      edge(orchestrationId, "nat-traversal-p2p", "implements", `component-nat-traversal-orchestration-${orchestrationId}`, `decision-p2p-multiplayer-orchestration-${orchestrationId}`, now),
-      edge(orchestrationId, "host-migration-p2p", "implements", `component-host-migration-orchestration-${orchestrationId}`, `decision-p2p-multiplayer-orchestration-${orchestrationId}`, now),
-      edge(orchestrationId, "sync-backend", "depends_on", `component-multiplayer-sync-orchestration-${orchestrationId}`, `backend-networking-orchestration-${orchestrationId}`, now),
-    );
-  }
-
-  const decisions: WorkflowGraph["decisions"] = hasMultiplayer
-    ? [
-        {
-          id: `decision-p2p-multiplayer-orchestration-${orchestrationId}`,
-          title: "P2P multiplayer",
-          summary: "Initial networking assumption for multiplayer until planner input changes it.",
-          status: "proposed",
-          nodeId: `decision-p2p-multiplayer-orchestration-${orchestrationId}`,
-          createdAt: now,
-          updatedAt: now,
-        },
-      ]
-    : [];
-
+function emptyWorkflowGraph(projectId: number, orchestrationId: number, goal: string, title: string, now: string): WorkflowGraph {
   return {
     id: `workflow-project-${projectId}-orchestration-${orchestrationId}`,
     projectId: `project-${projectId}`,
     title,
     description: goal.trim() || undefined,
     revision: 0,
-    nodes,
-    edges,
-    decisions,
+    nodes: [],
+    edges: [],
+    decisions: [],
     risks: [],
-    openQuestions: [
-      {
-        id: `question-runtime-orchestration-${orchestrationId}`,
-        question: "What runtime, deployment, and compatibility constraints should the agents preserve?",
-        status: "open",
-        nodeIds: [`question-runtime-orchestration-${orchestrationId}`],
-        createdAt: now,
-        updatedAt: now,
-      },
-    ],
-    layoutHints: nodes.map((workflowNode, index) => ({
-      id: `layout-${workflowNode.id}`,
-      nodeId: workflowNode.id,
-      sectionId: workflowNode.kind,
-      order: index,
-    })),
+    openQuestions: [],
+    layoutHints: [],
     revisions: [],
-    createdAt: now,
-    updatedAt: now,
-  };
-}
-
-function node(
-  orchestrationId: number,
-  slug: string,
-  kind: WorkflowGraph["nodes"][number]["kind"],
-  title: string,
-  summary: string,
-  now: string,
-  body?: string,
-): WorkflowGraph["nodes"][number] {
-  return {
-    id: slug === "goal" ? `goal-orchestration-${orchestrationId}` : `${slug}-orchestration-${orchestrationId}`,
-    kind,
-    status: "active",
-    title,
-    summary,
-    body,
-    createdAt: now,
-    updatedAt: now,
-  };
-}
-
-function edge(
-  orchestrationId: number,
-  slug: string,
-  kind: WorkflowGraph["edges"][number]["kind"],
-  fromNodeId: string,
-  toNodeId: string,
-  now: string,
-): WorkflowGraph["edges"][number] {
-  return {
-    id: `edge-${slug}-orchestration-${orchestrationId}`,
-    kind,
-    fromNodeId,
-    toNodeId,
-    status: "active",
     createdAt: now,
     updatedAt: now,
   };

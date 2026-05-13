@@ -48,6 +48,8 @@ export interface ArcCardMetadata {
   agentRole?: string;
   goal?: string;
   planSummary?: string;
+  questionId?: string;
+  status?: string;
 }
 
 export interface ArcTaskProgress {
@@ -215,6 +217,33 @@ export interface ArcPlannerQuestion {
   options: ArcPlannerOption[];
 }
 
+export interface ArcPlannerQuestionAnswer {
+  selectedOptionIds: string[];
+  selectedLabels: string[];
+  customText?: string;
+  content: string;
+  createdAt: string;
+  source?: string;
+}
+
+export interface ArcPlannerQuestionMessage {
+  id: number;
+  role: "user" | "planner" | "system";
+  content: string;
+  createdAt: string;
+}
+
+export interface ArcPlannerQuestionView extends ArcPlannerQuestion {
+  source: "planner" | "workflow";
+  status: "open" | "answered" | "resolved" | "deprecated";
+  answer: ArcPlannerQuestionAnswer | null;
+  workflowNodeId?: string;
+  detail?: string;
+  recommendedOptionIds?: string[];
+  recommendationRationale?: string;
+  messages: ArcPlannerQuestionMessage[];
+}
+
 export interface ArcOrchestrationMessage {
   id: number;
   role: "user" | "planner" | "system";
@@ -280,6 +309,7 @@ export interface ArcOrchestration {
     agents?: Array<{ name?: string; role?: string; objective?: string; prompt?: string; acceptanceCriteria?: string[] }>;
   } | null;
   latestQuestion?: ArcPlannerQuestion | null;
+  questions?: ArcPlannerQuestionView[];
   workflow?: ArcPersistedWorkflowGraph | null;
   latestWorkflowPatch?: ArcWorkflowPatchStatus | null;
   createdAt: string;
@@ -293,6 +323,7 @@ export interface ArcOrchestrationView {
   parentCard: ArcCard | null;
   borderCard: ArcCard | null;
   childCards: ArcCard[];
+  questionCards?: ArcCard[];
   aggregate: {
     total: number;
     done: number;
@@ -367,6 +398,38 @@ export async function answerOrchestrationQuestion(
       body: JSON.stringify({ selectedOptionIds, customText }),
     },
   );
+  return parseJsonResponse(response);
+}
+
+export async function sendOrchestrationQuestionMessage(
+  orchestrationId: number,
+  questionId: string,
+  payload: { content?: string; selectedOptionIds?: string[]; customText?: string },
+): Promise<ArcOrchestrationView> {
+  const response = await fetch(
+    `/api/orchestrations/${encodeURIComponent(String(orchestrationId))}/questions/${encodeURIComponent(questionId)}/messages`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  );
+  return parseJsonResponse(response);
+}
+
+export async function updateOrchestrationPlan(orchestrationId: number): Promise<ArcOrchestrationView> {
+  const response = await fetch(`/api/orchestrations/${encodeURIComponent(String(orchestrationId))}/plan/update`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+  });
+  return parseJsonResponse(response);
+}
+
+export async function remakeOrchestrationPlan(orchestrationId: number): Promise<ArcOrchestrationView> {
+  const response = await fetch(`/api/orchestrations/${encodeURIComponent(String(orchestrationId))}/plan/remake`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+  });
   return parseJsonResponse(response);
 }
 
