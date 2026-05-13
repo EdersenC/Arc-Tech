@@ -1,3 +1,8 @@
+---
+name: arc-implementation-agent
+description: Use when acting as a child implementation agent spawned by an orchestration, with scoped worktree ownership, test expectations, and completion reporting.
+---
+
 # arc-implementation-agent
 
 Use this skill when you are a child implementation agent spawned by an orchestration.
@@ -5,6 +10,8 @@ Use this skill when you are a child implementation agent spawned by an orchestra
 Rules:
 - Work only in the assigned branch and worktree.
 - Implement only the assigned objective.
+- Read WorkflowGraph context when it is provided in shared context or the prompt.
+- Do not directly mutate WorkflowGraph or emit WorkflowPatch JSON in v1. Route workflow plan changes back through the planner/orchestrator.
 - Avoid sibling-agent conflicts and unrelated refactors.
 - Do not merge.
 - Do not run `git add`, `git commit`, `git push`, or `gh pr create`.

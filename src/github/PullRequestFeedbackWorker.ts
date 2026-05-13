@@ -13,6 +13,26 @@ import type { GitHubPRFeedbackService } from "./GitHubPRFeedbackService.js";
 export interface PullRequestFeedbackWorkerConfig {
   enabled: boolean;
   pollMs: number;
+  idleMs: number;
+}
+
+export interface PullRequestFeedbackPollScope {
+  projectId?: number;
+  taskId?: number;
+  orchestrationId?: number;
+  includeSuspended?: boolean;
+}
+
+export interface PullRequestFeedbackPollResult {
+  enabled: boolean;
+  busy: boolean;
+  tracked: number;
+  skippedClosedTasks: number;
+  suspended: number;
+  feedbackEvents: number;
+  messagesQueued: number;
+  errors: number;
+  resumed: number;
 }
 
 export class PullRequestFeedbackWorker {
@@ -35,7 +55,7 @@ export class PullRequestFeedbackWorker {
     if (!this.config.enabled || this.timer) {
       return;
     }
-    console.log("PR feedback worker started.", { pollMs: this.config.pollMs });
+    console.log("PR feedback worker started.", { pollMs: this.config.pollMs, idleMs: this.config.idleMs });
     void this.pollOnce().catch((error) => console.error("Initial PR feedback poll failed.", error));
     this.timer = setInterval(() => {
       void this.pollOnce().catch((error) => console.error("PR feedback poll failed.", error));
@@ -51,19 +71,68 @@ export class PullRequestFeedbackWorker {
     this.timer = null;
   }
 
-  async pollOnce(): Promise<void> {
+  async pollOnce(scope: PullRequestFeedbackPollScope = {}): Promise<PullRequestFeedbackPollResult> {
+    const result = emptyPollResult(this.config.enabled);
     if (!this.config.enabled || this.polling) {
-      return;
+      result.busy = this.polling;
+      return result;
     }
     this.polling = true;
     try {
       this.backfillTrackedPullRequests();
-      for (const tracked of this.feedbackRepo.listOpen()) {
-        await this.pollTrackedPullRequest(tracked);
+      for (const tracked of this.listTrackedPullRequests(scope)) {
+        result.tracked += 1;
+        const item = await this.pollTrackedPullRequest(tracked);
+        result.skippedClosedTasks += item.skippedClosedTasks;
+        result.suspended += item.suspended;
+        result.feedbackEvents += item.feedbackEvents;
+        result.messagesQueued += item.messagesQueued;
+        result.errors += item.errors;
       }
+      return result;
     } finally {
       this.polling = false;
     }
+  }
+
+  async resumeAndPoll(scope: PullRequestFeedbackPollScope): Promise<PullRequestFeedbackPollResult> {
+    const result = emptyPollResult(this.config.enabled);
+    if (!this.config.enabled) {
+      return result;
+    }
+    this.backfillTrackedPullRequests();
+    result.resumed = this.resumePolling(scope);
+    const polled = await this.pollOnce({ ...scope, includeSuspended: false });
+    return { ...polled, resumed: result.resumed };
+  }
+
+  private listTrackedPullRequests(scope: PullRequestFeedbackPollScope): TrackedPullRequest[] {
+    if (scope.taskId !== undefined) {
+      const tracked = this.feedbackRepo.findByTaskId(scope.taskId);
+      if (!tracked || tracked.state !== "open") return [];
+      if (tracked.pollingSuspendedAt && !scope.includeSuspended) return [];
+      return [tracked];
+    }
+    if (scope.orchestrationId !== undefined) {
+      return this.feedbackRepo.listOpenByOrchestration(scope.orchestrationId, scope.includeSuspended ?? false);
+    }
+    if (scope.projectId !== undefined) {
+      return this.feedbackRepo.listOpenByProject(scope.projectId, scope.includeSuspended ?? false);
+    }
+    return this.feedbackRepo.listOpen();
+  }
+
+  private resumePolling(scope: PullRequestFeedbackPollScope): number {
+    if (scope.taskId !== undefined) {
+      return this.feedbackRepo.resumePollingForTask(scope.taskId);
+    }
+    if (scope.orchestrationId !== undefined) {
+      return this.feedbackRepo.resumePollingForOrchestration(scope.orchestrationId);
+    }
+    if (scope.projectId !== undefined) {
+      return this.feedbackRepo.resumePollingForProject(scope.projectId);
+    }
+    return 0;
   }
 
   private backfillTrackedPullRequests(): void {
@@ -80,10 +149,12 @@ export class PullRequestFeedbackWorker {
     }
   }
 
-  private async pollTrackedPullRequest(tracked: TrackedPullRequest): Promise<void> {
+  private async pollTrackedPullRequest(tracked: TrackedPullRequest): Promise<PullRequestFeedbackPollResult> {
+    const result = emptyPollResult(true);
     const task = this.tasks.getById(tracked.taskId);
     if (!task || isTaskClosedForFeedback(task.status)) {
-      return;
+      result.skippedClosedTasks = 1;
+      return result;
     }
 
     try {
@@ -91,15 +162,21 @@ export class PullRequestFeedbackWorker {
       this.feedbackRepo.markPolled(tracked.id);
       if (snapshot.state !== "open") {
         this.feedbackRepo.markState(tracked.id, snapshot.state);
-        return;
+        return result;
       }
 
       const newEvents = snapshot.feedback
         .map((feedback) => this.feedbackRepo.createFeedbackEvent(tracked, feedback, null))
         .filter((event): event is PullRequestFeedbackEvent => event !== null);
       if (newEvents.length === 0) {
-        return;
+        if (this.shouldSuspendForIdlePolling(tracked)) {
+          this.feedbackRepo.suspendPolling(tracked.id, `No new PR feedback for ${formatDuration(this.config.idleMs)}.`);
+          result.suspended = 1;
+        }
+        return result;
       }
+      this.feedbackRepo.markFeedbackReceived(tracked.id);
+      result.feedbackEvents = newEvents.length;
 
       const taskMessage = this.tasks.enqueueUserMessage({
         taskId: task.id,
@@ -108,6 +185,7 @@ export class PullRequestFeedbackWorker {
         content: buildFeedbackPrompt(task, tracked, newEvents),
       });
       this.feedbackRepo.markEventsDelivered(newEvents.map((event) => event.id), taskMessage.id);
+      result.messagesQueued = 1;
       this.tasks.addCodexEvent(task.id, "pr_feedback.queued", "pull_request_feedback", {
         prUrl: tracked.prUrl,
         feedbackItems: newEvents.length,
@@ -122,6 +200,7 @@ export class PullRequestFeedbackWorker {
       this.pump.enqueue(updatedTask.id);
       await this.reactToFeedback(tracked, newEvents);
       await this.postVisibilityUpdates(updatedTask, tracked, newEvents);
+      return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.feedbackRepo.markError(tracked.id, message);
@@ -130,7 +209,17 @@ export class PullRequestFeedbackWorker {
         prUrl: tracked.prUrl,
         error: message,
       });
+      result.errors = 1;
+      return result;
     }
+  }
+
+  private shouldSuspendForIdlePolling(tracked: TrackedPullRequest): boolean {
+    if (this.config.idleMs <= 0 || tracked.pollingSuspendedAt) {
+      return false;
+    }
+    const idleSince = parseTimestamp(tracked.lastFeedbackAt ?? tracked.createdAt);
+    return idleSince !== null && Date.now() - idleSince.getTime() >= this.config.idleMs;
   }
 
   private async reactToFeedback(tracked: TrackedPullRequest, events: PullRequestFeedbackEvent[]): Promise<void> {
@@ -229,4 +318,32 @@ ${event.body}`;
 
 function isTaskClosedForFeedback(status: TaskStatus): boolean {
   return status === "ABANDONED" || status === "CANCELED" || status === "FAILED" || status === "MERGED";
+}
+
+function emptyPollResult(enabled: boolean): PullRequestFeedbackPollResult {
+  return {
+    enabled,
+    busy: false,
+    tracked: 0,
+    skippedClosedTasks: 0,
+    suspended: 0,
+    feedbackEvents: 0,
+    messagesQueued: 0,
+    errors: 0,
+    resumed: 0,
+  };
+}
+
+function parseTimestamp(value: string | null): Date | null {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatDuration(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes >= 60 && minutes % 60 === 0) {
+    return `${minutes / 60} hour${minutes === 60 ? "" : "s"}`;
+  }
+  return `${minutes} minute${minutes === 1 ? "" : "s"}`;
 }

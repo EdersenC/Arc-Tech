@@ -20,6 +20,11 @@ Make child agents as independent as practical to reduce merge conflicts.
 Prefer agents that own different files/modules.
 Include integration strategy and shared context.`;
 
+export interface PlannerRunOptions {
+  extraInstructions?: string;
+  metadata?: unknown;
+}
+
 export class OrchestrationPlannerService {
   private readonly validator = new AgentFleetPlanValidator();
 
@@ -31,20 +36,20 @@ export class OrchestrationPlannerService {
     private readonly runner: CodexRunner,
   ) {}
 
-  async startPlanner(orchestrationId: number): Promise<string> {
+  async startPlanner(orchestrationId: number, options: PlannerRunOptions = {}): Promise<string> {
     const orchestration = this.requireOrchestration(orchestrationId);
     this.orchestrations.updateStatus(orchestrationId, "PLANNING");
-    const response = await this.runPlanner(orchestration, this.buildPlannerPrompt(orchestration, this.messages.listRecent(orchestrationId, 30)));
-    this.messages.create(orchestrationId, "planner", response);
+    const response = await this.runPlanner(orchestration, this.buildPlannerPrompt(orchestration, this.messages.listRecent(orchestrationId, 30), options.extraInstructions));
+    this.messages.create(orchestrationId, "planner", response, { metadata: options.metadata });
     this.orchestrations.updateStatus(orchestrationId, "WAITING_USER");
     return response;
   }
 
-  async continuePlanner(orchestrationId: number, _userMessage?: string): Promise<string> {
+  async continuePlanner(orchestrationId: number, _userMessage?: string, options: PlannerRunOptions = {}): Promise<string> {
     const orchestration = this.requireOrchestration(orchestrationId);
     this.orchestrations.updateStatus(orchestrationId, "PLANNING");
-    const response = await this.runPlanner(orchestration, this.buildPlannerPrompt(orchestration, this.messages.listRecent(orchestrationId, 40)));
-    this.messages.create(orchestrationId, "planner", response);
+    const response = await this.runPlanner(orchestration, this.buildPlannerPrompt(orchestration, this.messages.listRecent(orchestrationId, 40), options.extraInstructions));
+    this.messages.create(orchestrationId, "planner", response, { metadata: options.metadata });
     this.orchestrations.updateStatus(orchestrationId, "WAITING_USER");
     return response;
   }
@@ -67,17 +72,17 @@ export class OrchestrationPlannerService {
     return recent?.content ?? "No planner response has been captured yet.";
   }
 
-  async generateFleetPlan(orchestrationId: number): Promise<{ raw: string; validJson?: string; errors: string[] }> {
+  async generateFleetPlan(orchestrationId: number, options: PlannerRunOptions = {}): Promise<{ raw: string; validJson?: string; errors: string[] }> {
     const orchestration = this.requireOrchestration(orchestrationId);
     this.orchestrations.updateStatus(orchestrationId, "PLANNING");
-    const raw = await this.runPlanner(orchestration, this.buildFleetPlanPrompt(orchestration, this.messages.listRecent(orchestrationId, 80)));
+    const raw = await this.runPlanner(orchestration, this.buildFleetPlanPrompt(orchestration, this.messages.listRecent(orchestrationId, 80), options.extraInstructions));
     const validation = this.validator.validateForOrchestration(raw, orchestration);
     if (validation.ok && validation.json) {
       this.orchestrations.updateFinalPlan(orchestrationId, validation.json);
-      this.messages.create(orchestrationId, "planner", validation.json, { metadata: { fleetPlan: true } });
+      this.messages.create(orchestrationId, "planner", validation.json, { metadata: { ...metadataRecord(options.metadata), fleetPlan: true } });
       return { raw, validJson: validation.json, errors: [] };
     }
-    this.messages.create(orchestrationId, "planner", raw, { metadata: { invalidFleetPlan: true, errors: validation.errors } });
+    this.messages.create(orchestrationId, "planner", raw, { metadata: { ...metadataRecord(options.metadata), invalidFleetPlan: true, errors: validation.errors } });
     return { raw, errors: validation.errors };
   }
 
@@ -106,7 +111,7 @@ ${invalidJson}`,
     return { raw, errors: validation.errors };
   }
 
-  buildPlannerPrompt(orchestration: Orchestration, history: OrchestrationMessage[]): string {
+  buildPlannerPrompt(orchestration: Orchestration, history: OrchestrationMessage[], extraInstructions?: string): string {
     return `${PLANNER_SYSTEM_PROMPT}
 
 Mode: planning conversation only. Do not emit final AgentFleetPlan JSON yet unless the app explicitly asks during launch.
@@ -120,10 +125,11 @@ Bounds: min_agents=${orchestration.minAgents}, max_agents=${orchestration.maxAge
 Conversation so far:
 ${formatHistory(history)}
 
+${extraInstructions ? `Additional orchestration instructions:\n${extraInstructions}\n\n` : ""}
 Respond to the user with concise planning help, concrete options, and the current plan.`;
   }
 
-  buildFleetPlanPrompt(orchestration: Orchestration, history: OrchestrationMessage[]): string {
+  buildFleetPlanPrompt(orchestration: Orchestration, history: OrchestrationMessage[], extraInstructions?: string): string {
     return `${PLANNER_SYSTEM_PROMPT}
 
 The app is launching the fleet now. Output strict JSON only. Do not include markdown, comments, prose, or code fences.
@@ -166,6 +172,7 @@ ${orchestration.goal}
 Conversation:
 ${formatHistory(history)}
 
+${extraInstructions ? `Additional orchestration instructions:\n${extraInstructions}\n\n` : ""}
 JSON only.`;
   }
 
@@ -203,6 +210,10 @@ function formatHistory(history: OrchestrationMessage[]): string {
     return "(none yet)";
   }
   return history.map((message) => `${message.role.toUpperCase()}: ${message.content}`).join("\n\n");
+}
+
+function metadataRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
 function summarizeFleetPlan(value: string): string {

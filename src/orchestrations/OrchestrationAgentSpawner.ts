@@ -177,13 +177,21 @@ Rules:
 - Do not delete sibling worktrees.
 - Do not change branches.
 - Run relevant tests if available.
-- End with a concise completion summary:
-  - what changed
-  - files changed
-  - tests run
-  - known risks
-  - branch
-  - PR title: <short descriptive title>`;
+- End with a concise human completion summary for the task thread.
+- Include exactly one fenced ARC_AGENT_COMPLETION_JSON block for the runner-owned PR stager:
+\`\`\`ARC_AGENT_COMPLETION_JSON
+{
+  "summary": ["short reviewer-facing result"],
+  "changes": ["behavior-level change, no local paths"],
+  "verification": [{"command": "test/build command", "result": "passed", "notes": "optional"}],
+  "risks": ["known risk or empty if none"],
+  "followUps": ["follow-up or empty if none"],
+  "reviewFocus": ["what reviewers should inspect"],
+  "prTitle": "short pull request title"
+}
+\`\`\`
+- Do not include local filesystem paths, raw prompts, WorkflowGraph dumps, or internal runner rules in that JSON.
+- Do not include changed-file lists in that JSON; the runner derives file facts from git.`;
   }
 
   generateBranchName(orchestrationId: number, agentIndex: number, agentName: string): string {

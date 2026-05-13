@@ -222,8 +222,21 @@ Continue modifying the same isolated task worktree. Stay on the current task bra
 
 Primary completion goal:
 - Finish the requested work in this isolated task worktree.
-- End with a concise summary of what changed, files changed, tests run, known risks, and a proposed pull request title.
-- Include a line exactly like: PR title: <short descriptive title>
+- End with a concise human summary for the task thread.
+- Include exactly one fenced ARC_AGENT_COMPLETION_JSON block for the runner-owned PR stager:
+\`\`\`ARC_AGENT_COMPLETION_JSON
+{
+  "summary": ["short reviewer-facing result"],
+  "changes": ["behavior-level change, no local paths"],
+  "verification": [{"command": "test/build command", "result": "passed", "notes": "optional"}],
+  "risks": ["known risk or empty if none"],
+  "followUps": ["follow-up or empty if none"],
+  "reviewFocus": ["what reviewers should inspect"],
+  "prTitle": "short pull request title"
+}
+\`\`\`
+- Do not include local filesystem paths, raw prompts, WorkflowGraph dumps, or internal runner rules in that JSON.
+- Do not include changed-file lists in that JSON; the runner derives file facts from git.
 
 Git rules:
 - Do not run git add, git commit, git push, or gh pr create.

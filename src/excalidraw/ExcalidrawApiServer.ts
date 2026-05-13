@@ -3,14 +3,33 @@ import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import type { AppConfig } from "../config.js";
 import type { PullRequestFeedbackRepo } from "../github/PullRequestFeedbackRepo.js";
+import type { PullRequestFeedbackWorker } from "../github/PullRequestFeedbackWorker.js";
 import { stableJson } from "../orchestrations/AgentFleetPlanValidator.js";
+import type { OrchestrationPlannerService } from "../orchestrations/OrchestrationPlannerService.js";
 import type { OrchestrationAgentsRepo } from "../orchestrations/repos/OrchestrationAgentsRepo.js";
 import type { OrchestrationMessagesRepo } from "../orchestrations/repos/OrchestrationMessagesRepo.js";
 import type { OrchestrationsRepo } from "../orchestrations/repos/OrchestrationsRepo.js";
-import type { AgentFleetPlan, AgentFleetPlanAgent, Orchestration, OrchestrationMessage, PlannerQuestion } from "../orchestrations/types.js";
+import type {
+  AgentFleetPlan,
+  AgentFleetPlanAgent,
+  Orchestration,
+  OrchestrationMessage,
+  PlannerQuestionView,
+} from "../orchestrations/types.js";
 import type { ProjectStore, TaskStore } from "../stores.js";
 import type { ImplementService } from "../tasks/ImplementService.js";
 import { DEFAULT_MODEL, type Effort, type Project, type Task } from "../types.js";
+import { parsePlannerWorkflowPatch } from "../workflows/index.js";
+import type {
+  PersistedWorkflowGraph,
+  PersistedWorkflowPatch,
+  WorkflowGraph,
+  WorkflowEvent,
+  WorkflowEventBus,
+  WorkflowService,
+  WorkflowOpenQuestion,
+  WorkflowPatch,
+} from "../workflows/index.js";
 import { ExcalidrawCardsRepo } from "./ExcalidrawCardsRepo.js";
 import { buildTaskProgress } from "./taskProgress.js";
 import {
@@ -32,9 +51,13 @@ interface ApiDeps {
   implementService: ImplementService;
   cards: ExcalidrawCardsRepo;
   feedback?: PullRequestFeedbackRepo;
+  prFeedbackWorker?: Pick<PullRequestFeedbackWorker, "resumeAndPoll">;
   orchestrations: OrchestrationsRepo;
   orchestrationAgents: OrchestrationAgentsRepo;
   orchestrationMessages: OrchestrationMessagesRepo;
+  planner: Pick<OrchestrationPlannerService, "startPlanner" | "continuePlanner" | "generateFleetPlan">;
+  workflows: WorkflowService;
+  workflowEvents: WorkflowEventBus;
 }
 
 type JsonRecord = Record<string, unknown>;
@@ -50,6 +73,8 @@ interface ExcalidrawProjectView {
   remoteUrl: string | null;
   githubPrEnabled: boolean;
   githubPrFeedbackEnabled: boolean;
+  githubPrFeedbackPollMs: number;
+  githubPrFeedbackIdleMs: number;
   githubBaseBranch: string;
   githubRemote: string;
   prReady: boolean;
@@ -128,14 +153,48 @@ export class ExcalidrawApiServer {
       await this.handleOrchestrationAnswer(Number(orchestrationAnswerMatch[1]), decodeURIComponent(orchestrationAnswerMatch[2]), req, res);
       return;
     }
-    const orchestrationOptionMatch = /^\/api\/orchestrations\/(\d+)\/options\/([^/]+)\/select$/.exec(url.pathname);
-    if (orchestrationOptionMatch && req.method === "POST") {
-      await this.handleOrchestrationOptionSelect(Number(orchestrationOptionMatch[1]), decodeURIComponent(orchestrationOptionMatch[2]), req, res);
+    const orchestrationQuestionMessageMatch = /^\/api\/orchestrations\/(\d+)\/questions\/([^/]+)\/messages$/.exec(url.pathname);
+    if (orchestrationQuestionMessageMatch && req.method === "POST") {
+      await this.handleOrchestrationQuestionMessage(Number(orchestrationQuestionMessageMatch[1]), decodeURIComponent(orchestrationQuestionMessageMatch[2]), req, res);
+      return;
+    }
+    const orchestrationPlanUpdateMatch = /^\/api\/orchestrations\/(\d+)\/plan\/update$/.exec(url.pathname);
+    if (orchestrationPlanUpdateMatch && req.method === "POST") {
+      await this.handleUpdateOrchestrationPlan(Number(orchestrationPlanUpdateMatch[1]), res);
+      return;
+    }
+    const orchestrationPlanRemakeMatch = /^\/api\/orchestrations\/(\d+)\/plan\/remake$/.exec(url.pathname);
+    if (orchestrationPlanRemakeMatch && req.method === "POST") {
+      await this.handleRemakeOrchestrationPlan(Number(orchestrationPlanRemakeMatch[1]), res);
       return;
     }
     const orchestrationLaunchMatch = /^\/api\/orchestrations\/(\d+)\/launch$/.exec(url.pathname);
     if (orchestrationLaunchMatch && req.method === "POST") {
       await this.handleLaunchOrchestration(Number(orchestrationLaunchMatch[1]), req, res);
+      return;
+    }
+    const workflowProjectMatch = /^\/api\/workflows\/project\/(\d+)\/current$/.exec(url.pathname);
+    if (workflowProjectMatch && req.method === "GET") {
+      await this.handleGetProjectWorkflow(Number(workflowProjectMatch[1]), res);
+      return;
+    }
+    const workflowOrchestrationMatch = /^\/api\/workflows\/orchestration\/(\d+)$/.exec(url.pathname);
+    if (workflowOrchestrationMatch && req.method === "GET") {
+      await this.handleGetOrCreateOrchestrationWorkflow(Number(workflowOrchestrationMatch[1]), res);
+      return;
+    }
+    const workflowPatchMatch = /^\/api\/workflows\/orchestration\/(\d+)\/patch$/.exec(url.pathname);
+    if (workflowPatchMatch && req.method === "POST") {
+      await this.handleApplyWorkflowPatch(Number(workflowPatchMatch[1]), req, res);
+      return;
+    }
+    const workflowHistoryMatch = /^\/api\/workflows\/(\d+)\/history$/.exec(url.pathname);
+    if (workflowHistoryMatch && req.method === "GET") {
+      await this.handleWorkflowHistory(Number(workflowHistoryMatch[1]), res);
+      return;
+    }
+    if (url.pathname === "/api/workflows/events" && req.method === "GET") {
+      await this.handleWorkflowEvents(url, req, res);
       return;
     }
     if (url.pathname === "/api/excalidraw/projects" && req.method === "GET") {
@@ -152,6 +211,10 @@ export class ExcalidrawApiServer {
     }
     if (url.pathname === "/api/excalidraw/project/remote" && req.method === "POST") {
       await this.handleSetProjectRemote(req, res);
+      return;
+    }
+    if (url.pathname === "/api/pr-feedback/check" && req.method === "POST") {
+      await this.handleCheckPullRequests(req, res);
       return;
     }
     if (url.pathname === "/api/tasks" && req.method === "GET") {
@@ -214,12 +277,19 @@ export class ExcalidrawApiServer {
       metadata: { source: "excalidraw", kind: "initial_prompt" },
     });
 
-    const question = plannerQuestion(orchestration, project, 0);
-    const message = plannerQuestionMessage(orchestration.goal, project, question);
-    this.deps.orchestrationMessages.create(orchestration.id, "planner", message, {
-      metadata: { kind: "question", question },
+    const workflowState = this.getOrCreateWorkflowForOrchestration(orchestration);
+    if (workflowState.created) {
+      this.deps.workflowEvents.graphCreated(workflowState.workflow);
+    } else {
+      this.deps.workflowEvents.snapshot(workflowState.workflow);
+    }
+    const message = await this.deps.planner.startPlanner(orchestration.id, {
+      extraInstructions: workflowPlannerPromptContract(workflowState.workflow),
+      metadata: { kind: "planner_turn", workflow: workflowMessageMetadata(workflowState.workflow), plannerPrompt: workflowPlannerPromptContract(workflowState.workflow) },
     });
-    const updated = this.deps.orchestrations.updateStatus(orchestration.id, "waiting_for_user_choice");
+    await this.recordPlannerWorkflowPatch(orchestration, message, workflowState.workflow);
+    const currentWorkflow = this.deps.workflows.getCurrentGraphForOrchestration(orchestration.id) ?? workflowState.workflow;
+    const updated = this.requireOrchestration(orchestration.id);
     const label = orchestrationParentLabel(updated, project, message);
     const size = orchestrationParentSize(label, undefined, orchestration.maxAgents);
     const card = this.deps.cards.createPlanCard({
@@ -242,7 +312,7 @@ export class ExcalidrawApiServer {
       },
     });
     const saved = this.deps.orchestrations.updateCardIds(orchestration.id, card.id, null);
-    this.sendJson(res, 201, { orchestration: this.orchestrationView(saved), card: this.hydrateCard(card) });
+    this.sendJson(res, 201, { orchestration: this.orchestrationView(saved), card: this.hydrateCard(card), workflow: workflowView(currentWorkflow) });
   }
 
   private async handleGetOrchestration(orchestrationId: number, res: ServerResponse): Promise<void> {
@@ -265,7 +335,7 @@ export class ExcalidrawApiServer {
       authorUserId: "excalidraw",
       metadata: { source: "excalidraw", kind: "freeform" },
     });
-    const updated = this.advancePlanner(orchestrationId);
+    const updated = await this.runPlannerTurn(orchestrationId, content);
     this.sendJson(res, 202, this.orchestrationView(updated));
   }
 
@@ -275,58 +345,211 @@ export class ExcalidrawApiServer {
     req: IncomingMessage,
     res: ServerResponse,
   ): Promise<void> {
-    this.requireOrchestration(orchestrationId);
     const body = await readJson(req);
-    const selectedOptionIds = arrayOfStrings(body.selectedOptionIds).filter(Boolean);
-    const customText = stringField(body, "customText", "").trim();
-    if (selectedOptionIds.length === 0 && !customText) {
-      throw new Error("Select at least one option or enter a custom answer.");
-    }
-    const question = latestQuestion(this.deps.orchestrationMessages.listRecent(orchestrationId, 20), questionId);
-    const selectedLabels = question
-      ? question.options.filter((option) => selectedOptionIds.includes(option.id)).map((option) => option.label)
-      : selectedOptionIds;
-    const content = customText || `Selected: ${selectedLabels.join(", ")}`;
-    this.deps.orchestrationMessages.create(orchestrationId, "user", content, {
-      authorUserId: "excalidraw",
-      metadata: { source: "excalidraw", kind: "option_answer", questionId, selectedOptionIds, selectedLabels, customText },
-    });
-    const updated = this.advancePlanner(orchestrationId);
+    const updated = this.saveQuestionAnswer(orchestrationId, questionId, body);
     this.sendJson(res, 202, this.orchestrationView(updated));
   }
 
-  private async handleOrchestrationOptionSelect(
+  private async handleOrchestrationQuestionMessage(
     orchestrationId: number,
-    optionId: string,
-    _req: IncomingMessage,
+    questionId: string,
+    req: IncomingMessage,
     res: ServerResponse,
   ): Promise<void> {
-    this.requireOrchestration(orchestrationId);
-    const question = latestQuestion(this.deps.orchestrationMessages.listRecent(orchestrationId, 20));
+    const body = await readJson(req);
+    const updated = await this.submitQuestionPlannerTurn(orchestrationId, questionId, body);
+    this.sendJson(res, 202, this.orchestrationView(updated));
+  }
+
+  private async submitQuestionPlannerTurn(orchestrationId: number, questionId: string, body: JsonRecord): Promise<Orchestration> {
+    const orchestration = this.requireOrchestration(orchestrationId);
+    const selectedOptionIds = arrayOfStrings(body.selectedOptionIds).filter(Boolean);
+    const customText = stringField(body, "customText", "").trim();
+    const freeformContent = stringField(body, "content", "").trim();
+    if (selectedOptionIds.length === 0 && !customText && !freeformContent) {
+      throw new Error("Select at least one option or enter a message.");
+    }
+    const messages = this.deps.orchestrationMessages.listByOrchestrationId(orchestrationId);
+    const workflow = this.deps.workflows.getCurrentGraphForOrchestration(orchestrationId);
+    const question = orchestrationQuestions(messages, workflow).find(
+      (candidate) => candidate.id === questionId || candidate.workflowNodeId === questionId,
+    );
     if (!question) {
-      throw new Error("No active planner question is available.");
+      throw new Error(`Question ${questionId} was not found on orchestration #${orchestrationId}.`);
     }
-    const option = question.options.find((candidate) => candidate.id === optionId);
-    if (!option) {
-      throw new Error(`Option ${optionId} was not found on the active question.`);
-    }
-    this.deps.orchestrationMessages.create(orchestrationId, "user", `Selected: ${option.label}`, {
+    const selectedLabels = question
+      ? question.options.filter((option) => selectedOptionIds.includes(option.id)).map((option) => option.label)
+      : selectedOptionIds;
+    const content = questionTurnContent(question, selectedLabels.length ? selectedLabels : selectedOptionIds, customText || freeformContent);
+    this.deps.orchestrationMessages.create(orchestrationId, "user", content, {
       authorUserId: "excalidraw",
       metadata: {
         source: "excalidraw",
-        kind: "option_answer",
+        kind: "question_message",
         questionId: question.id,
-        selectedOptionIds: [option.id],
-        selectedLabels: [option.label],
+        selectedOptionIds,
+        selectedLabels,
+        customText: customText || undefined,
+        content: freeformContent || undefined,
+        questionSource: question.source,
+        workflowNodeId: question.workflowNodeId,
       },
     });
-    const updated = this.advancePlanner(orchestrationId);
+    return this.runQuestionPlannerTurn(orchestration, question, content);
+  }
+
+  private saveQuestionAnswer(orchestrationId: number, questionId: string, body: JsonRecord): Orchestration {
+    const orchestration = this.requireOrchestration(orchestrationId);
+    const selectedOptionIds = arrayOfStrings(body.selectedOptionIds).filter(Boolean);
+    const customText = stringField(body, "customText", "").trim() || stringField(body, "content", "").trim();
+    if (selectedOptionIds.length === 0 && !customText) {
+      throw new Error("Select at least one option or enter an answer.");
+    }
+    const messages = this.deps.orchestrationMessages.listByOrchestrationId(orchestrationId);
+    const workflow = this.deps.workflows.getCurrentGraphForOrchestration(orchestrationId);
+    const question = orchestrationQuestions(messages, workflow).find(
+      (candidate) => candidate.id === questionId || candidate.workflowNodeId === questionId,
+    );
+    if (!question) {
+      throw new Error(`Question ${questionId} was not found on orchestration #${orchestrationId}.`);
+    }
+    const selectedLabels = question.options.filter((option) => selectedOptionIds.includes(option.id)).map((option) => option.label);
+    const content = questionTurnContent(question, selectedLabels.length ? selectedLabels : selectedOptionIds, customText);
+    this.deps.orchestrationMessages.create(orchestrationId, "user", content, {
+      authorUserId: "excalidraw",
+      metadata: {
+        source: "excalidraw",
+        kind: "question_answer",
+        questionId: question.id,
+        selectedOptionIds,
+        selectedLabels,
+        customText: customText || undefined,
+        questionSource: question.source,
+        workflowNodeId: question.workflowNodeId,
+        batched: true,
+      },
+    });
+    const updatedWorkflow = this.resolveQuestionLocally(orchestration, question, content);
+    const updated = this.requireOrchestration(orchestrationId);
+    this.refreshParentOrchestrationCard(
+      updated,
+      batchedQuestionStatusMessage(orchestrationQuestions(this.deps.orchestrationMessages.listByOrchestrationId(orchestrationId), updatedWorkflow ?? workflow)),
+      "planning",
+    );
+    return updated;
+  }
+
+  private resolveQuestionLocally(
+    orchestration: Orchestration,
+    question: PlannerQuestionView,
+    answer: string,
+  ): PersistedWorkflowGraph | null {
+    const workflow = this.deps.workflows.getCurrentGraphForOrchestration(orchestration.id);
+    if (!workflow?.graph.openQuestions.some((candidate) => candidate.id === question.id)) {
+      return workflow;
+    }
+    const now = new Date().toISOString();
+    const nodeId = question.workflowNodeId && workflow.graph.nodes.some((node) => node.id === question.workflowNodeId)
+      ? question.workflowNodeId
+      : null;
+    const patch: WorkflowPatch = {
+      id: `patch-batched-answer-${slugify(question.id)}-rev-${workflow.revision}-${Date.now()}`,
+      graphId: workflow.graph.id,
+      baseRevision: workflow.revision,
+      reason: `Save batched answer for ${question.text}`,
+      author: "system",
+      createdAt: now,
+      operations: [
+        { op: "resolve_open_question", questionId: question.id, answer },
+        ...(nodeId
+          ? [{
+              op: "update_node" as const,
+              nodeId,
+              changes: { status: "complete" as const, summary: answer },
+            }]
+          : []),
+      ],
+    };
+    const updated = this.deps.workflows.applyPlannerPatch(orchestration.projectId, orchestration.id, patch);
+    const history = this.deps.workflows.listGraphHistory(updated.id);
+    const persistedPatch = history[history.length - 1] ?? null;
+    if (persistedPatch) {
+      this.deps.workflowEvents.patchApplied(updated, persistedPatch);
+    }
+    this.deps.orchestrationMessages.create(orchestration.id, "system", "Saved batched question answer in the WorkflowGraph.", {
+      metadata: {
+        kind: "workflow_patch",
+        workflowPatch: {
+          status: "applied",
+          patchId: patch.id,
+          reason: patch.reason,
+          baseRevision: patch.baseRevision,
+          resultingRevision: updated.revision,
+        },
+        workflow: workflowMessageMetadata(updated),
+      },
+    });
+    return updated;
+  }
+
+  private async handleUpdateOrchestrationPlan(orchestrationId: number, res: ServerResponse): Promise<void> {
+    const orchestration = this.requireOrchestration(orchestrationId);
+    this.deps.orchestrations.clearFinalPlan(orchestrationId, "refining_plan");
+    const messages = this.deps.orchestrationMessages.listByOrchestrationId(orchestrationId);
+    const workflow = this.deps.workflows.getCurrentGraphForOrchestration(orchestrationId);
+    const content = savedAnswersPlannerPrompt(orchestration, orchestrationQuestions(messages, workflow));
+    this.deps.orchestrationMessages.create(orchestrationId, "user", content, {
+      authorUserId: "excalidraw",
+      metadata: { source: "excalidraw", kind: "plan_update_request" },
+    });
+    const updated = await this.runPlannerTurn(orchestrationId, content);
     this.sendJson(res, 202, this.orchestrationView(updated));
+  }
+
+  private async handleRemakeOrchestrationPlan(orchestrationId: number, res: ServerResponse): Promise<void> {
+    const orchestration = this.requireOrchestration(orchestrationId);
+    const project = requireValue(this.deps.projects.getById(orchestration.projectId), `Project #${orchestration.projectId} not found.`);
+    this.deps.orchestrations.clearFinalPlan(orchestrationId, "refining_plan");
+    const messages = this.deps.orchestrationMessages.listByOrchestrationId(orchestrationId);
+    const workflow = this.deps.workflows.getCurrentGraphForOrchestration(orchestrationId);
+    const content = `${savedAnswersPlannerPrompt(orchestration, orchestrationQuestions(messages, workflow))}\n\nRemake the AgentFleetPlan from scratch using these answers.`;
+    this.deps.orchestrationMessages.create(orchestrationId, "user", content, {
+      authorUserId: "excalidraw",
+      metadata: { source: "excalidraw", kind: "plan_remake_request" },
+    });
+    const plan = await this.ensureFleetPlan(orchestrationId, project);
+    const ready = this.deps.orchestrations.updateStatus(orchestrationId, "ready_for_approval");
+    this.deps.orchestrationMessages.create(orchestrationId, "system", "AgentFleetPlan was remade from saved answers and is ready for review.", {
+      metadata: { kind: "ready_for_approval", readySummary: plan.architectureSummary, plan },
+    });
+    this.refreshParentOrchestrationCard(ready, readyMessage(plan), "ready");
+    this.sendJson(res, 202, this.orchestrationView(ready));
   }
 
   private async handleLaunchOrchestration(orchestrationId: number, req: IncomingMessage, res: ServerResponse): Promise<void> {
     const orchestration = this.requireOrchestration(orchestrationId);
     const project = await this.getSyncedExcalidrawProject(requireValue(this.deps.projects.getById(orchestration.projectId), "Project not found."));
+    const body = await readJson(req);
+    if (!isOrchestrationReadyForSpawn(orchestration)) {
+      const workflow = this.deps.workflows.getCurrentGraphForOrchestration(orchestrationId);
+      const unanswered = workflow?.graph.openQuestions.filter((question) => question.status === "open") ?? [];
+      if (unanswered.length) {
+        this.sendJson(res, 409, {
+          code: "OPEN_QUESTIONS",
+          error: `Answer the current question batch before preparing the plan. ${unanswered.length} question${unanswered.length === 1 ? "" : "s"} still open.`,
+        });
+        return;
+      }
+      const plan = await this.ensureFleetPlan(orchestrationId, project);
+      const ready = this.deps.orchestrations.updateStatus(orchestrationId, "ready_for_approval");
+      this.deps.orchestrationMessages.create(orchestrationId, "system", "AgentFleetPlan is ready for review. Press Start Plan in the canvas container to launch child agents.", {
+        metadata: { kind: "ready_for_approval", readySummary: plan.architectureSummary, plan },
+      });
+      this.refreshParentOrchestrationCard(ready, readyMessage(plan), "ready");
+      this.sendJson(res, 202, { orchestration: this.orchestrationView(ready), cards: [], requiresApproval: true });
+      return;
+    }
+
     const projectView = this.projectView(project);
     if (!projectView.prReady) {
       this.sendJson(res, 409, {
@@ -336,8 +559,7 @@ export class ExcalidrawApiServer {
       });
       return;
     }
-    const body = await readJson(req);
-    const plan = this.ensureFleetPlan(orchestrationId, project);
+    const plan = await this.ensureFleetPlan(orchestrationId, project);
     const current = this.requireOrchestration(orchestrationId);
     this.deps.orchestrations.updateStatus(orchestrationId, "spawning_agents");
     const parentCard = current.parentCardId ? this.deps.cards.findById(current.parentCardId) : null;
@@ -442,6 +664,108 @@ export class ExcalidrawApiServer {
     this.sendJson(res, 201, { orchestration: this.orchestrationView(launched), cards: this.hydrateCards(cards) });
   }
 
+  private async handleGetProjectWorkflow(projectId: number, res: ServerResponse): Promise<void> {
+    const project = this.getExcalidrawProjectOrDefault(projectId);
+    const workflow = this.deps.workflows.getCurrentGraphForProject(project.id);
+    this.sendJson(res, 200, { workflow: workflow ? workflowView(workflow) : null });
+  }
+
+  private async handleGetOrCreateOrchestrationWorkflow(orchestrationId: number, res: ServerResponse): Promise<void> {
+    const orchestration = this.requireOrchestration(orchestrationId);
+    this.requireExcalidrawProject(orchestration.projectId);
+    const before = this.deps.workflows.getCurrentGraphForOrchestration(orchestrationId);
+    const workflow = this.deps.workflows.getOrCreateForOrchestration(orchestration.projectId, orchestrationId, orchestration.goal);
+    if (!before) {
+      this.deps.workflowEvents.graphCreated(workflow);
+    }
+    this.sendJson(res, before ? 200 : 201, { workflow: workflowView(workflow) });
+  }
+
+  private async handleWorkflowHistory(graphId: number, res: ServerResponse): Promise<void> {
+    const history = this.deps.workflows.listGraphHistory(graphId);
+    this.sendJson(res, 200, { patches: history.map(workflowPatchView) });
+  }
+
+  private async handleApplyWorkflowPatch(orchestrationId: number, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const orchestration = this.requireOrchestration(orchestrationId);
+    this.requireExcalidrawProject(orchestration.projectId);
+    const body = await readJson(req);
+    const patch = workflowPatchFromBody(body);
+    let workflow = this.deps.workflows.getCurrentGraphForOrchestration(orchestrationId);
+    if (!workflow) {
+      workflow = this.deps.workflows.getOrCreateForOrchestration(orchestration.projectId, orchestrationId, orchestration.goal);
+      this.deps.workflowEvents.graphCreated(workflow);
+    }
+
+    try {
+      const updated = this.deps.workflows.applyPlannerPatch(orchestration.projectId, orchestrationId, patch);
+      const history = this.deps.workflows.listGraphHistory(updated.id);
+      const persistedPatch = history[history.length - 1] ?? null;
+      if (persistedPatch) {
+        this.deps.workflowEvents.patchApplied(updated, persistedPatch);
+        console.log("Workflow patch applied.", {
+          graphId: updated.id,
+          workflowGraphId: updated.graph.id,
+          orchestrationId,
+          patchId: persistedPatch.patch.id,
+          resultingRevision: updated.revision,
+          reason: persistedPatch.reason,
+        });
+      }
+      this.sendJson(res, 202, { workflow: workflowView(updated), patch: persistedPatch ? workflowPatchView(persistedPatch) : null });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.deps.workflowEvents.patchRejected({
+        projectId: orchestration.projectId,
+        orchestrationId,
+        graphId: workflow.id,
+        patch,
+        error: message,
+      });
+      console.warn("Workflow patch rejected.", {
+        graphId: workflow.id,
+        workflowGraphId: workflow.graph.id,
+        orchestrationId,
+        patchId: patch.id,
+        baseRevision: patch.baseRevision,
+        error: message,
+      });
+      this.sendJson(res, isStaleWorkflowError(message) ? 409 : 400, { error: message });
+    }
+  }
+
+  private async handleWorkflowEvents(url: URL, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const projectId = numericQueryParam(url, "projectId");
+    if (projectId === null) {
+      throw new Error("projectId is required.");
+    }
+    const project = this.getExcalidrawProjectOrDefault(projectId);
+    res.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+    });
+    res.write(": connected\n\n");
+
+    const unsubscribe = this.deps.workflowEvents.subscribe(project.id, (event) => {
+      writeWorkflowSse(res, event);
+    });
+    const keepAlive = setInterval(() => {
+      res.write(": keep-alive\n\n");
+    }, 25000);
+
+    req.on("close", () => {
+      clearInterval(keepAlive);
+      unsubscribe();
+    });
+
+    const current = this.deps.workflows.getCurrentGraphForProject(project.id);
+    if (current) {
+      this.deps.workflowEvents.snapshot(current);
+    }
+  }
+
   private async handleImplement(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const body = await readJson(req);
     const message = stringField(body, "message").trim();
@@ -536,6 +860,17 @@ export class ExcalidrawApiServer {
       baseBranch: result.baseBranch,
       summary: result.summary,
     });
+  }
+
+  private async handleCheckPullRequests(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.deps.prFeedbackWorker) {
+      this.sendJson(res, 503, { error: "PR feedback worker is not available." });
+      return;
+    }
+    const body = await readJson(req);
+    const project = await this.projectFromBody(body);
+    const result = await this.deps.prFeedbackWorker.resumeAndPoll({ projectId: project.id });
+    this.sendJson(res, 202, { project: this.projectView(project), result });
   }
 
   private async handleCreatePlanCard(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -652,13 +987,25 @@ export class ExcalidrawApiServer {
   private async projectFromQuery(url: URL): Promise<Project> {
     const projectId = numericQueryParam(url, "projectId");
     if (projectId !== null) {
-      const project = this.deps.projects.getById(projectId);
-      if (!project || project.guildId !== this.deps.config.excalidrawProjectGuildId) {
-        throw new Error(`Excalidraw project ${projectId} was not found.`);
-      }
+      return this.getExcalidrawProjectOrDefault(projectId);
+    }
+    return this.getDefaultExcalidrawProject();
+  }
+
+  private getExcalidrawProjectOrDefault(projectId: number): Project {
+    const project = this.deps.projects.getById(projectId);
+    if (project && project.guildId === this.deps.config.excalidrawProjectGuildId) {
       return project;
     }
     return this.getDefaultExcalidrawProject();
+  }
+
+  private requireExcalidrawProject(projectId: number): Project {
+    const project = this.deps.projects.getById(projectId);
+    if (!project || project.guildId !== this.deps.config.excalidrawProjectGuildId) {
+      throw new Error(`Excalidraw project ${projectId} was not found.`);
+    }
+    return project;
   }
 
   private async projectFromBody(body: JsonRecord): Promise<Project> {
@@ -669,10 +1016,10 @@ export class ExcalidrawApiServer {
         throw new Error("projectId must be a positive integer.");
       }
       const project = this.deps.projects.getById(projectId);
-      if (!project || project.guildId !== this.deps.config.excalidrawProjectGuildId) {
-        throw new Error(`Excalidraw project ${projectId} was not found.`);
+      if (project && project.guildId === this.deps.config.excalidrawProjectGuildId) {
+        return project;
       }
-      return project;
+      return this.getDefaultExcalidrawProject();
     }
     return this.getDefaultExcalidrawProject();
   }
@@ -691,6 +1038,8 @@ export class ExcalidrawApiServer {
       remoteUrl: project.remoteUrl,
       githubPrEnabled: this.deps.config.githubPrEnabled,
       githubPrFeedbackEnabled: this.deps.config.githubPrFeedbackEnabled,
+      githubPrFeedbackPollMs: this.deps.config.githubPrFeedbackPollMs,
+      githubPrFeedbackIdleMs: this.deps.config.githubPrFeedbackIdleMs,
       githubBaseBranch: this.deps.config.githubBaseBranch,
       githubRemote: this.deps.config.githubRemote,
       prReady: blockers.length === 0,
@@ -765,6 +1114,8 @@ export class ExcalidrawApiServer {
     const agents = this.deps.orchestrationAgents.listByOrchestrationId(orchestration.id);
     const parentCard = orchestration.parentCardId ? this.deps.cards.findById(orchestration.parentCardId) : null;
     const borderCard = orchestration.borderCardId ? this.deps.cards.findById(orchestration.borderCardId) : null;
+    const workflow = this.deps.workflows.getCurrentGraphForOrchestration(orchestration.id);
+    const questions = orchestrationQuestions(messages, workflow);
     return {
       orchestration: {
         ...orchestration,
@@ -774,8 +1125,11 @@ export class ExcalidrawApiServer {
         worktreesPath: project?.worktreesPath ?? null,
         remoteStatus: project?.remoteStatus ?? null,
         remoteUrl: project?.remoteUrl ?? null,
-        latestQuestion: latestQuestion(messages),
+        latestQuestion: null,
+        questions,
         finalPlan: parseJson(orchestration.finalPlanJson),
+        workflow: workflow ? workflowView(workflow) : null,
+        latestWorkflowPatch: latestWorkflowPatchMetadata(messages),
       },
       messages: messages.map((message) => ({ ...message, metadata: parseJson(message.metadataJson) })),
       agents,
@@ -785,54 +1139,287 @@ export class ExcalidrawApiServer {
         .map((agent) => (agent.childTaskId ? this.deps.cards.findByTaskId(agent.childTaskId) : null))
         .filter((card): card is ExcalidrawCard => Boolean(card))
         .map((card) => this.hydrateCard(card)),
+      questionCards: [],
       aggregate: aggregateAgents(agents),
     };
   }
 
-  private advancePlanner(orchestrationId: number): Orchestration {
+  private async ensureFleetPlan(orchestrationId: number, project: Project): Promise<AgentFleetPlan> {
     const orchestration = this.requireOrchestration(orchestrationId);
-    const project = requireValue(this.deps.projects.getById(orchestration.projectId), `Project #${orchestration.projectId} not found.`);
-    const messages = this.deps.orchestrationMessages.listByOrchestrationId(orchestrationId);
-    const answerCount = messages.filter((message) => {
-      const metadata = parseJson(message.metadataJson) as { kind?: string } | null;
-      return metadata?.kind === "option_answer" || metadata?.kind === "freeform";
-    }).length;
-
-    const latestUser = [...messages].reverse().find((message) => message.role === "user");
-    const wantsMorePlanning = latestUser ? isContinuePlanningRequest(latestUser) : false;
-    if (wantsMorePlanning || answerCount < 2) {
-      const step = wantsMorePlanning ? Math.max(2, answerCount) : answerCount;
-      this.deps.orchestrations.clearFinalPlan(orchestrationId, "waiting_for_user_choice");
-      const question = plannerQuestion(orchestration, project, step);
-      const message = plannerQuestionMessage(orchestration.goal, project, question);
-      this.deps.orchestrationMessages.create(orchestrationId, "planner", message, {
-        metadata: { kind: "question", question },
-      });
-      const updated = this.deps.orchestrations.updateStatus(orchestrationId, "waiting_for_user_choice");
-      this.refreshParentOrchestrationCard(updated, message, "planning");
-      return updated;
+    const workflow = this.deps.workflows.getCurrentGraphForOrchestration(orchestrationId);
+    if (orchestration.finalPlanJson) {
+      const parsed = parseJson(orchestration.finalPlanJson) as AgentFleetPlan | null;
+      if (parsed?.agents?.length) {
+        const withWorkflow = workflow ? withWorkflowSharedContext(parsed, workflow.graph) : parsed;
+        if (withWorkflow !== parsed) {
+          this.deps.orchestrations.updateFinalPlan(orchestrationId, stableJson(withWorkflow));
+        }
+        return withWorkflow;
+      }
     }
-
-    const plan = buildFleetPlan(orchestration, project, messages);
-    const finalPlanJson = stableJson(plan);
-    this.deps.orchestrations.updateFinalPlan(orchestrationId, finalPlanJson);
-    this.deps.orchestrationMessages.create(orchestrationId, "planner", readyMessage(plan), {
-      metadata: { kind: "ready", readySummary: plan.architectureSummary, plan },
+    const generated = await this.deps.planner.generateFleetPlan(orchestrationId, {
+      extraInstructions: workflow ? workflowFleetPlanPromptContract(workflow) : undefined,
+      metadata: workflow ? { workflow: workflowMessageMetadata(workflow) } : undefined,
     });
-    const updated = this.deps.orchestrations.updateStatus(orchestrationId, "ready_for_approval");
-    this.refreshParentOrchestrationCard(updated, readyMessage(plan), "ready");
+    if (generated.errors.length) {
+      throw new Error(`Planner could not generate a valid AgentFleetPlan: ${generated.errors.join("; ")}`);
+    }
+    const refreshed = this.requireOrchestration(orchestrationId);
+    const parsed = parseJson(refreshed.finalPlanJson) as AgentFleetPlan | null;
+    if (!parsed?.agents?.length) {
+      throw new Error("Planner generated a fleet plan, but no valid plan was stored.");
+    }
+    const plan = workflow ? withWorkflowSharedContext(parsed, workflow.graph) : parsed;
+    this.deps.orchestrations.updateFinalPlan(orchestrationId, stableJson(plan));
+    return plan;
+  }
+
+  private async runPlannerTurn(orchestrationId: number, userMessage: string): Promise<Orchestration> {
+    const orchestration = this.requireOrchestration(orchestrationId);
+    const workflowState = this.getOrCreateWorkflowForOrchestration(orchestration);
+    if (workflowState.created) {
+      this.deps.workflowEvents.graphCreated(workflowState.workflow);
+    }
+    const message = await this.deps.planner.continuePlanner(orchestrationId, userMessage, {
+      extraInstructions: workflowPlannerPromptContract(workflowState.workflow),
+      metadata: { kind: "planner_turn", workflow: workflowMessageMetadata(workflowState.workflow), plannerPrompt: workflowPlannerPromptContract(workflowState.workflow) },
+    });
+    await this.recordPlannerWorkflowPatch(orchestration, message, workflowState.workflow);
+    const autoReady = await this.preparePlanIfQuestionsResolved(orchestrationId);
+    const updated = autoReady ?? this.requireOrchestration(orchestrationId);
+    if (!autoReady) {
+      this.refreshParentOrchestrationCard(updated, message, "planning");
+    }
     return updated;
   }
 
-  private ensureFleetPlan(orchestrationId: number, project: Project): AgentFleetPlan {
-    const orchestration = this.requireOrchestration(orchestrationId);
-    if (orchestration.finalPlanJson) {
-      const parsed = parseJson(orchestration.finalPlanJson) as AgentFleetPlan | null;
-      if (parsed?.agents?.length) return parsed;
+  private async runQuestionPlannerTurn(
+    orchestration: Orchestration,
+    question: PlannerQuestionView,
+    userMessage: string,
+  ): Promise<Orchestration> {
+    const workflowState = this.getOrCreateWorkflowForOrchestration(orchestration);
+    if (workflowState.created) {
+      this.deps.workflowEvents.graphCreated(workflowState.workflow);
     }
-    const plan = buildFleetPlan(orchestration, project, this.deps.orchestrationMessages.listByOrchestrationId(orchestrationId));
-    this.deps.orchestrations.updateFinalPlan(orchestrationId, stableJson(plan));
-    return plan;
+    const extraInstructions = [
+      workflowPlannerPromptContract(workflowState.workflow),
+      questionScopedPlannerPrompt(question, userMessage),
+    ].join("\n\n");
+    const message = await this.deps.planner.continuePlanner(orchestration.id, userMessage, {
+      extraInstructions,
+      metadata: {
+        kind: "planner_turn",
+        source: "excalidraw",
+        questionId: question.id,
+        workflowNodeId: question.workflowNodeId,
+        workflow: workflowMessageMetadata(workflowState.workflow),
+        plannerPrompt: extraInstructions,
+      },
+    });
+    await this.recordPlannerWorkflowPatch(orchestration, message, workflowState.workflow);
+    const autoReady = await this.preparePlanIfQuestionsResolved(orchestration.id);
+    const updated = autoReady ?? this.requireOrchestration(orchestration.id);
+    if (!autoReady) {
+      this.refreshParentOrchestrationCard(updated, message, "planning");
+    }
+    return updated;
+  }
+
+  private async preparePlanIfQuestionsResolved(orchestrationId: number): Promise<Orchestration | null> {
+    const orchestration = this.requireOrchestration(orchestrationId);
+    if (orchestration.finalPlanJson || isOrchestrationReadyForSpawn(orchestration) || orchestration.status === "agents_spawned") {
+      return null;
+    }
+    const workflow = this.deps.workflows.getCurrentGraphForOrchestration(orchestrationId);
+    const openQuestions = workflow?.graph.openQuestions ?? [];
+    if (!openQuestions.length || openQuestions.some((question) => question.status === "open")) {
+      return null;
+    }
+    const project = requireValue(this.deps.projects.getById(orchestration.projectId), `Project #${orchestration.projectId} not found.`);
+    const plan = await this.ensureFleetPlan(orchestrationId, project);
+    const ready = this.deps.orchestrations.updateStatus(orchestrationId, "ready_for_approval");
+    this.deps.orchestrationMessages.create(orchestrationId, "system", "All workflow questions are resolved. AgentFleetPlan is ready to start from the canvas.", {
+      metadata: { kind: "ready_for_approval", readySummary: plan.architectureSummary, plan, autoPrepared: true },
+    });
+    this.refreshParentOrchestrationCard(ready, readyMessage(plan), "ready");
+    return ready;
+  }
+
+  private getOrCreateWorkflowForOrchestration(orchestration: Orchestration): { workflow: PersistedWorkflowGraph; created: boolean } {
+    const before = this.deps.workflows.getCurrentGraphForOrchestration(orchestration.id);
+    const workflow = this.deps.workflows.getOrCreateForOrchestration(orchestration.projectId, orchestration.id, orchestration.goal);
+    return { workflow, created: !before };
+  }
+
+  private async recordPlannerWorkflowPatch(orchestration: Orchestration, plannerContent: string, workflow: PersistedWorkflowGraph): Promise<void> {
+    const result = this.processPlannerWorkflowPatch(orchestration, plannerContent, workflow, { emitRejectedEvents: false });
+    const repaired = result.metadata.status === "none" || result.metadata.status === "rejected"
+      ? await this.repairPlannerWorkflowPatchIfNeeded(orchestration, plannerContent, result.metadata, result.workflow ?? workflow)
+      : { metadata: { status: "none" }, workflow: null };
+    if (result.metadata.status === "none" && repaired.metadata.status === "none") {
+      return;
+    }
+    const metadata = repaired.metadata.status === "none" ? result.metadata : repaired.metadata;
+    if (metadata.status === "rejected") {
+      this.emitWorkflowPatchRejected(orchestration, repaired.workflow ?? result.workflow ?? workflow, metadata);
+    }
+    this.deps.orchestrationMessages.create(orchestration.id, "system", workflowPatchStatusMessage(metadata), {
+      metadata: {
+        kind: "workflow_patch",
+        workflowPatch: metadata,
+        workflow: workflowMessageMetadata(repaired.workflow ?? result.workflow ?? workflow),
+      },
+    });
+  }
+
+  private processPlannerWorkflowPatch(
+    orchestration: Orchestration,
+    plannerContent: string,
+    fallbackWorkflow: PersistedWorkflowGraph,
+    options: { emitRejectedEvents?: boolean } = {},
+  ): { metadata: JsonRecord; workflow: PersistedWorkflowGraph | null } {
+    const parsed = parsePlannerWorkflowPatch(plannerContent, { graph: fallbackWorkflow.graph, author: "planner" });
+    if (parsed.status === "none") {
+      return { metadata: { status: "none" }, workflow: null };
+    }
+    if (parsed.status === "rejected") {
+      if (options.emitRejectedEvents) {
+        this.emitWorkflowPatchRejected(orchestration, fallbackWorkflow, { status: "rejected", error: parsed.error });
+      }
+      return { metadata: { status: "rejected", error: parsed.error }, workflow: null };
+    }
+
+    try {
+      const updated = this.deps.workflows.applyPlannerPatch(orchestration.projectId, orchestration.id, parsed.patch);
+      const history = this.deps.workflows.listGraphHistory(updated.id);
+      const persistedPatch = history[history.length - 1] ?? null;
+      if (persistedPatch) {
+        this.deps.workflowEvents.patchApplied(updated, persistedPatch);
+        console.log("Planner workflow patch applied.", {
+          graphId: updated.id,
+          workflowGraphId: updated.graph.id,
+          orchestrationId: orchestration.id,
+          patchId: persistedPatch.patch.id,
+          resultingRevision: updated.revision,
+          reason: persistedPatch.reason,
+        });
+      }
+      return {
+        metadata: {
+          status: "applied",
+          patchId: parsed.patch.id,
+          reason: parsed.patch.reason,
+          baseRevision: parsed.patch.baseRevision,
+          resultingRevision: updated.revision,
+        },
+        workflow: updated,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (options.emitRejectedEvents) {
+        this.emitWorkflowPatchRejected(orchestration, fallbackWorkflow, {
+          status: "rejected",
+          patchId: parsed.patch.id,
+          reason: parsed.patch.reason,
+          baseRevision: parsed.patch.baseRevision,
+          error: message,
+        }, parsed.patch);
+      }
+      return {
+        metadata: {
+          status: "rejected",
+          patchId: parsed.patch.id,
+          reason: parsed.patch.reason,
+          baseRevision: parsed.patch.baseRevision,
+          error: message,
+        },
+        workflow: null,
+      };
+    }
+  }
+
+  private async repairPlannerWorkflowPatchIfNeeded(
+    orchestration: Orchestration,
+    plannerContent: string,
+    failedMetadata: JsonRecord,
+    fallbackWorkflow: PersistedWorkflowGraph,
+  ): Promise<{ metadata: JsonRecord; workflow: PersistedWorkflowGraph | null }> {
+    if (!plannerTurnNeedsWorkflowRepair(plannerContent, failedMetadata)) {
+      return { metadata: { status: "none" }, workflow: null };
+    }
+    const maxRepairAttempts = 2;
+    let contentToRepair = plannerContent;
+    let currentMetadata = failedMetadata;
+    for (let attempt = 1; attempt <= maxRepairAttempts; attempt += 1) {
+      const repairPrompt = workflowPatchRepairPrompt(contentToRepair, currentMetadata, fallbackWorkflow, attempt, maxRepairAttempts);
+      this.deps.orchestrationMessages.create(orchestration.id, "system", repairPrompt, {
+        metadata: {
+          kind: "workflow_patch_repair_request",
+          workflow: workflowMessageMetadata(fallbackWorkflow),
+          failedWorkflowPatch: currentMetadata,
+          repairAttempt: attempt,
+          maxRepairAttempts,
+        },
+      });
+      const repairedContent = await this.deps.planner.continuePlanner(orchestration.id, undefined, {
+        extraInstructions: repairPrompt,
+        metadata: {
+          kind: "workflow_patch_repair",
+          workflow: workflowMessageMetadata(fallbackWorkflow),
+          failedWorkflowPatch: currentMetadata,
+          repairAttempt: attempt,
+          maxRepairAttempts,
+        },
+      });
+      const repaired = this.processPlannerWorkflowPatch(orchestration, repairedContent, fallbackWorkflow, { emitRejectedEvents: false });
+      if (repaired.metadata.status === "applied") {
+        return {
+          metadata: {
+            ...repaired.metadata,
+            repaired: true,
+            repairAttempts: attempt,
+          },
+          workflow: repaired.workflow,
+        };
+      }
+      contentToRepair = repairedContent;
+      currentMetadata = repaired.metadata;
+    }
+    return {
+      metadata: {
+        ...currentMetadata,
+        status: "rejected",
+        reason: "Planner workflow patch repair failed.",
+        originalStatus: failedMetadata.status,
+        repairAttempts: maxRepairAttempts,
+      },
+      workflow: null,
+    };
+  }
+
+  private emitWorkflowPatchRejected(
+    orchestration: Orchestration,
+    workflow: PersistedWorkflowGraph,
+    metadata: JsonRecord,
+    patch?: WorkflowPatch,
+  ): void {
+    const error = String(metadata.error ?? metadata.reason ?? "invalid planner patch");
+    this.deps.workflowEvents.patchRejected({
+      projectId: orchestration.projectId,
+      orchestrationId: orchestration.id,
+      graphId: workflow.id,
+      patch,
+      error,
+    });
+    console.warn(patch ? "Planner workflow patch rejected." : "Planner workflow patch rejected before apply.", {
+      graphId: workflow.id,
+      workflowGraphId: workflow.graph.id,
+      orchestrationId: orchestration.id,
+      patchId: patch?.id ?? metadata.patchId,
+      baseRevision: patch?.baseRevision ?? metadata.baseRevision,
+      error,
+    });
   }
 
   private refreshParentOrchestrationCard(orchestration: Orchestration, latestMessage: string, status: string): void {
@@ -935,56 +1522,6 @@ function parseOrchestrateCommand(message: string): { original: string; prompt: s
   return { original: `/orchestrate ${prompt}`, prompt };
 }
 
-function plannerQuestion(orchestration: Orchestration, project: Project, step: number): PlannerQuestion {
-  if (step <= 0) {
-    return {
-      id: `orch-${orchestration.id}-scope`,
-      text: `What kind of update should agents prioritize in ${project.projectName}?`,
-      allowMultiSelect: false,
-      options: [
-        { id: "repo_audit_first", label: "Audit first", description: "Inspect structure, dependencies, runtime, and current failure points." },
-        { id: "dependency_upgrade", label: "Dependency upgrade", description: "Focus on outdated packages, lockfiles, and build/runtime compatibility." },
-        { id: "stability_first", label: "Stability first", description: "Prioritize tests, lint/type errors, and known broken flows." },
-      ],
-    };
-  }
-  if (step === 1) {
-    return {
-      id: `orch-${orchestration.id}-boundaries`,
-      text: "What boundaries should the first agent batch respect?",
-      allowMultiSelect: true,
-      options: [
-        { id: "preserve_behavior", label: "Preserve behavior", description: "Keep existing app behavior unless the plan calls out a deliberate change." },
-        { id: "small_prs", label: "Small PRs", description: "Split work into narrow branches that can be reviewed independently." },
-        { id: "build_required", label: "Build required", description: "Each agent should run the relevant build/test command when possible." },
-      ],
-    };
-  }
-  return {
-    id: `orch-${orchestration.id}-missing-context-${step}`,
-    text: `What repo-specific context should I account for before spawning agents for ${project.projectName}?`,
-    allowMultiSelect: true,
-    options: [
-      { id: "known_broken_area", label: "Known broken area", description: "Use the text box to name the feature, command, or page that is broken." },
-      { id: "target_runtime", label: "Target runtime", description: "Clarify the runtime, framework, device, or deployment target." },
-      { id: "upgrade_constraints", label: "Upgrade constraints", description: "Mention dependencies, versions, files, or behavior that must not change." },
-    ],
-  };
-}
-
-function plannerQuestionMessage(goal: string, project: Project, question: PlannerQuestion): string {
-  return [
-    `Planning: ${oneLine(goal, 120)}`,
-    `Project: ${project.projectName}`,
-    `Repo: ${project.repoPath}`,
-    `Remote: ${project.remoteUrl ?? project.remoteStatus}`,
-    "",
-    question.text,
-    ...question.options.map((option, index) => `${index + 1}. ${option.label} - ${option.description ?? ""}`.trim()),
-    question.allowMultiSelect ? "You can pick multiple options or type a custom answer." : "Pick one option or type a custom answer.",
-  ].join("\n");
-}
-
 function readyMessage(plan: AgentFleetPlan): string {
   return [
     "I think this plan is ready to spawn.",
@@ -997,16 +1534,313 @@ function readyMessage(plan: AgentFleetPlan): string {
   ].join("\n");
 }
 
-function latestQuestion(messages: OrchestrationMessage[], questionId?: string): PlannerQuestion | null {
+function orchestrationQuestions(messages: OrchestrationMessage[], workflow: PersistedWorkflowGraph | null): PlannerQuestionView[] {
+  const answers = latestQuestionAnswers(messages);
+  const questions: PlannerQuestionView[] = [];
+  const seen = new Set<string>();
+  for (const openQuestion of workflow?.graph.openQuestions ?? []) {
+    if (!isWorkflowOpenQuestion(openQuestion) || seen.has(openQuestion.id)) continue;
+    const answer = answers.get(openQuestion.id) ?? workflowQuestionAnswer(openQuestion);
+    const status = openQuestion.status === "resolved" ? "resolved" : openQuestion.status === "deprecated" ? "deprecated" : answer ? "answered" : "open";
+    questions.push({
+      id: openQuestion.id,
+      text: openQuestion.question,
+      detail: openQuestion.detail,
+      allowMultiSelect: openQuestion.allowMultiSelect ?? false,
+      options: openQuestion.options ?? [],
+      recommendedOptionIds: openQuestion.recommendedOptionIds,
+      recommendationRationale: openQuestion.recommendationRationale,
+      source: "workflow",
+      status,
+      answer,
+      workflowNodeId: openQuestion.nodeIds?.[0] ?? openQuestion.id,
+      messages: questionMessages(messages, openQuestion.id),
+    });
+    seen.add(openQuestion.id);
+  }
+  return questions;
+}
+
+function latestQuestionAnswers(messages: OrchestrationMessage[]): Map<string, NonNullable<PlannerQuestionView["answer"]>> {
+  const answers = new Map<string, NonNullable<PlannerQuestionView["answer"]>>();
+  for (const message of messages) {
+    const metadata = parseJson(message.metadataJson) as {
+      kind?: string;
+      questionId?: string;
+      selectedOptionIds?: string[];
+      selectedLabels?: string[];
+      customText?: string;
+      source?: string;
+    } | null;
+    if ((metadata?.kind !== "question_answer" && metadata?.kind !== "option_answer" && metadata?.kind !== "question_message") || !metadata.questionId) continue;
+    answers.set(metadata.questionId, {
+      selectedOptionIds: metadata.selectedOptionIds ?? [],
+      selectedLabels: metadata.selectedLabels ?? [],
+      customText: metadata.customText,
+      content: message.content,
+      createdAt: message.createdAt,
+      source: metadata.source,
+    });
+  }
+  return answers;
+}
+
+function questionMessages(messages: OrchestrationMessage[], questionId: string): PlannerQuestionView["messages"] {
+  return messages
+    .filter((message) => {
+      const metadata = parseJson(message.metadataJson) as { questionId?: string; kind?: string } | null;
+      return metadata?.questionId === questionId && metadata.kind !== "workflow_patch";
+    })
+    .map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+      createdAt: message.createdAt,
+    }));
+}
+
+function workflowQuestionAnswer(question: WorkflowOpenQuestion): NonNullable<PlannerQuestionView["answer"]> | null {
+  if (!question.answer) return null;
+  return {
+    selectedOptionIds: [],
+    selectedLabels: [],
+    customText: question.answer,
+    content: question.answer,
+    createdAt: question.resolvedAt ?? question.updatedAt,
+    source: "workflow",
+  };
+}
+
+function batchedQuestionStatusMessage(questions: PlannerQuestionView[]): string {
+  const active = questions.filter((question) => question.status !== "deprecated");
+  const unanswered = active.filter((question) => !question.answer && question.status !== "resolved");
+  if (!active.length) {
+    return "No planner questions are open. Continue planning or prepare the agent plan.";
+  }
+  if (!unanswered.length) {
+    return "Question batch complete. Continue Planning can let the model ask another wave, or Prepare Plan can build the agent plan.";
+  }
+  return `Saved answer. ${unanswered.length} question${unanswered.length === 1 ? "" : "s"} still need answers before continuing the planning wave.`;
+}
+
+function questionTurnContent(question: PlannerQuestionView, selectedLabels: string[], freeform: string): string {
+  const parts = [`Question: ${question.text}`];
+  if (selectedLabels.length) {
+    parts.push(`Selected: ${selectedLabels.join(", ")}`);
+  }
+  if (freeform) {
+    parts.push(`User reply: ${freeform}`);
+  }
+  return parts.join("\n");
+}
+
+function questionScopedPlannerPrompt(question: PlannerQuestionView, userMessage: string): string {
+  return [
+    "This is a question-scoped planning turn.",
+    `Question id: ${question.id}`,
+    question.workflowNodeId ? `Workflow node id: ${question.workflowNodeId}` : null,
+    `Question: ${question.text}`,
+    question.detail ? `Detailed question: ${question.detail}` : null,
+    question.options.length ? `Current options:\n${question.options.map((option) => `- ${option.id}: ${option.label}${option.description ? ` - ${option.description}` : ""}`).join("\n")}` : "Current options: none",
+    question.recommendedOptionIds?.length ? `Current recommended option ids: ${question.recommendedOptionIds.join(", ")}` : null,
+    question.recommendationRationale ? `Current recommendation rationale: ${question.recommendationRationale}` : null,
+    `User message:\n${userMessage}`,
+    "Update the WorkflowGraph with a semantic WorkflowPatch. If the answer settles the question, resolve the open_question and update the matching node. If more nuance is needed, update this open_question with revised detail/options/recommendations or add follow-up open_question nodes.",
+  ].filter((line): line is string => Boolean(line)).join("\n");
+}
+
+function isWorkflowOpenQuestion(value: unknown): value is WorkflowOpenQuestion {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value) && typeof (value as WorkflowOpenQuestion).id === "string");
+}
+
+function savedAnswersPlannerPrompt(orchestration: Orchestration, questions: PlannerQuestionView[]): string {
+  const answered = questions.filter((question) => question.answer || question.messages.length > 0);
+  const lines = answered.length
+    ? answered.map((question) => {
+        const latestMessage = question.messages.at(-1)?.content;
+        return `- ${question.text}\n  Answer: ${question.answer?.content ?? latestMessage ?? "none"}`;
+      })
+    : ["- No saved answers yet."];
+  return [
+    "Update the current orchestration plan using the saved question answers.",
+    `Orchestration #${orchestration.id}`,
+    `Goal: ${orchestration.goal}`,
+    "",
+    "Saved answers:",
+    ...lines,
+  ].join("\n");
+}
+
+function latestWorkflowPatchMetadata(messages: OrchestrationMessage[]): unknown | null {
   for (const message of [...messages].reverse()) {
-    const metadata = parseJson(message.metadataJson) as { kind?: string; question?: PlannerQuestion } | null;
-    if (metadata?.kind !== "question" || !metadata.question) continue;
-    if (!questionId || metadata.question.id === questionId) return metadata.question;
+    const metadata = parseJson(message.metadataJson) as { workflowPatch?: unknown } | null;
+    if (metadata?.workflowPatch) return metadata.workflowPatch;
   }
   return null;
 }
 
-function buildFleetPlan(orchestration: Orchestration, project: Project, messages: OrchestrationMessage[]): AgentFleetPlan {
+function workflowMessageMetadata(workflow: PersistedWorkflowGraph): JsonRecord {
+  return {
+    graphId: workflow.id,
+    workflowGraphId: workflow.graph.id,
+    revision: workflow.revision,
+    projectId: workflow.projectId,
+    orchestrationId: workflow.orchestrationId,
+  };
+}
+
+function workflowPlannerPromptContract(workflow: PersistedWorkflowGraph): string {
+  const example = {
+    id: `patch-example-rev-${workflow.revision}`,
+    graphId: workflow.graph.id,
+    baseRevision: workflow.revision,
+    reason: "Add a concise semantic planning node.",
+    author: "planner",
+    createdAt: "2026-05-09T12:00:00.000Z",
+    operations: [
+      {
+        op: "add_node",
+        node: {
+          id: "component-example-node",
+          kind: "frontend_component",
+          status: "active",
+          title: "Example node",
+          summary: "One semantic workflow concept.",
+          createdAt: "2026-05-09T12:00:00.000Z",
+          updatedAt: "2026-05-09T12:00:00.000Z",
+        },
+      },
+    ],
+  };
+  const openQuestionExample = {
+    op: "add_open_question",
+    question: {
+      id: "question-visual-style",
+      question: "Visual style?",
+      detail: "Choose the first visual target so implementation agents can split work correctly.",
+      status: "open",
+      allowMultiSelect: false,
+      options: [
+        { id: "option-visual-2d", label: "2D top-down", description: "Fastest to implement and test." },
+        { id: "option-visual-25d", label: "2.5D pseudo-3D", description: "Richer look with more scope." },
+      ],
+      recommendedOptionIds: ["option-visual-2d"],
+      recommendationRationale: "2D top-down is the safest first playable target.",
+      nodeIds: ["node-question-visual-style"],
+      createdAt: "2026-05-09T12:00:00.000Z",
+      updatedAt: "2026-05-09T12:00:00.000Z",
+    },
+  };
+  return [
+    "Use the arc-workflow-architect skill concepts when maintaining the live workflow.",
+    "Maintain an evolving semantic WorkflowGraph for this orchestration. The model owns all semantic workflow nodes and questions.",
+    "Respond with concise user-facing planner text.",
+    "When requirements, architecture, risks, questions, tests, deployment, or agent plan semantics change, include exactly one fenced ARC_WORKFLOW_PATCH_JSON block. Do this on the first planner turn too.",
+    "If the graph has no nodes yet, create the goal and any useful initial workflow/question nodes from the user's actual orchestration prompt. Do not copy the example node.",
+    "Every clarification question you ask in prose must also appear in that WorkflowPatch as one open_question node plus a matching add_open_question operation with detail/options/recommendedOptionIds when useful.",
+    "If you ask multiple decisions/questions, create one open_question node and one add_open_question record per decision.",
+    `Patch graphId must be ${workflow.graph.id}; baseRevision must be ${workflow.revision}; reason is required.`,
+    "Allowed node.kind values: goal, requirement, decision, system_component, frontend_component, backend_component, data_store, external_service, agent_task, milestone, risk, open_question, note. Do not invent kinds such as game_module or architecture; use system_component, requirement, decision, or note instead.",
+    "Allowed edge.kind values: depends_on, implements, contains, blocks, relates_to, replaces, answers, mitigates, produces, consumes. Do not invent edge kinds such as decomposes_into or enabled_by; use contains, implements, depends_on, or relates_to instead.",
+    "Use WorkflowPatch field names exactly: node.kind, node.title, edge.kind, edge.fromNodeId, edge.toNodeId. Do not use type, label, from, or to.",
+    `Valid add_open_question operation shape: ${JSON.stringify(openQuestionExample)}`,
+    "For add_open_question, put id/question/detail/status/options/recommendedOptionIds/recommendationRationale/nodeIds inside the question object. Do not put nodeId, detail, or options directly on the operation.",
+    "Question options must use id, label, and optional description. Do not use option title/summary.",
+    `Compact valid WorkflowPatch example: ${JSON.stringify(example)}`,
+    "The example is syntax-only. Never create component-example-node or generic example content in the real workflow.",
+    "WorkflowPatch operations must be semantic only. Do not include Excalidraw elements, appState, files, coordinates, or canvas shape JSON.",
+    "If user input is ambiguous, ask the clarifying question and emit the matching open_question workflow patch.",
+    `Current graph summary:\n${workflowSummary(workflow.graph)}`,
+  ].join("\n");
+}
+
+function plannerTurnNeedsWorkflowRepair(content: string, metadata: JsonRecord): boolean {
+  if (metadata.status === "rejected") return true;
+  if (metadata.status !== "none") return false;
+  return /(\?|question|choose|option|recommend|workflow|plan|architecture|requirement|risk|decision)/i.test(content);
+}
+
+function workflowPatchRepairPrompt(
+  content: string,
+  metadata: JsonRecord,
+  workflow: PersistedWorkflowGraph,
+  attempt: number,
+  maxAttempts: number,
+): string {
+  return [
+    `Your previous planner response did not produce a valid semantic WorkflowPatch. Repair attempt ${attempt} of ${maxAttempts}.`,
+    `Failure: ${String(metadata.error ?? metadata.status ?? "missing workflow patch")}`,
+    "Re-emit the workflow update now. Output concise planner text plus exactly one ARC_WORKFLOW_PATCH_JSON fenced block.",
+    "If you asked any clarification question, represent it as an open_question node and add_open_question record with multiple-choice options and recommendedOptionIds when applicable.",
+    "For add_open_question, the operation must be {\"op\":\"add_open_question\",\"question\":{...}}. Put question text in question.question, link the visual node through question.nodeIds, and make options use id/label/description.",
+    "For update_node, update_edge, and update_open_question, changes must contain only mutable semantic fields. Do not put createdAt, updatedAt, selectedOptionIds, selectedLabels, or sourcePatchId inside changes.",
+    "If a user answered a question, use resolve_open_question with an answer string. Do not store selectedOptionIds in WorkflowPatch changes.",
+    "Use only allowed node.kind values: goal, requirement, decision, system_component, frontend_component, backend_component, data_store, external_service, agent_task, milestone, risk, open_question, note.",
+    "Use only allowed edge.kind values: depends_on, implements, contains, blocks, relates_to, replaces, answers, mitigates, produces, consumes.",
+    "If the graph is empty, create model-authored goal/workflow nodes from the user's actual orchestration prompt. Do not use example content.",
+    `Patch graphId must be ${workflow.graph.id}; baseRevision must be ${workflow.revision}.`,
+    `Current graph:\n${workflowSummary(workflow.graph)}`,
+    "Previous response:",
+    content,
+  ].join("\n\n");
+}
+
+function workflowFleetPlanPromptContract(workflow: PersistedWorkflowGraph): string {
+  return [
+    "Use the current WorkflowGraph as source-of-truth planning context.",
+    "Include a concise WorkflowGraph summary in AgentFleetPlan.sharedContext.",
+    `Current graph id: ${workflow.graph.id}; current revision: ${workflow.revision}.`,
+    workflowSummary(workflow.graph),
+    "Child implementation agents may read this workflow context but must not directly mutate WorkflowGraph in v1.",
+  ].join("\n");
+}
+
+function workflowPatchStatusMessage(metadata: JsonRecord): string {
+  if (metadata.status === "applied") {
+    return `Workflow patch applied: ${String(metadata.reason ?? metadata.patchId ?? "planner update")}`;
+  }
+  if (metadata.status === "rejected") {
+    return `Workflow patch rejected: ${String(metadata.error ?? metadata.reason ?? "invalid planner patch")}`;
+  }
+  return "Workflow patch not applied.";
+}
+
+function withWorkflowSharedContext(plan: AgentFleetPlan, graph: WorkflowGraph): AgentFleetPlan {
+  const summary = workflowSummary(graph);
+  const baseSharedContext = plan.sharedContext.includes("Current WorkflowGraph:")
+    ? plan.sharedContext.split("\n\nCurrent WorkflowGraph:")[0]
+    : plan.sharedContext;
+  return {
+    ...plan,
+    sharedContext: `${baseSharedContext}\n\nCurrent WorkflowGraph:\n${summary}\n\nChild agents receive this workflow as context only. They must not directly mutate WorkflowGraph in v1 unless routed back through the planner.`,
+  };
+}
+
+function workflowSummary(graph: WorkflowGraph): string {
+  const activeNodes = graph.nodes.filter((node) => node.status !== "deprecated");
+  const deprecatedNodes = graph.nodes.filter((node) => node.status === "deprecated");
+  const lines = [
+    `Graph: ${graph.id} rev ${graph.revision}`,
+    `Goal: ${graph.title}`,
+    "Active nodes:",
+    ...activeNodes.slice(0, 24).map((node) => `- ${node.id} [${node.kind}/${node.status}]: ${node.title}${node.summary ? ` - ${node.summary}` : ""}`),
+  ];
+  if (deprecatedNodes.length) {
+    lines.push("Deprecated nodes:", ...deprecatedNodes.slice(0, 12).map((node) => `- ${node.id}: ${node.title}${node.deprecatedReason ? ` - ${node.deprecatedReason}` : ""}`));
+  }
+  const questions = graph.openQuestions.filter((question) => question.status === "open");
+  if (questions.length) {
+    lines.push("Open questions:", ...questions.slice(0, 8).map((question) => `- ${question.id}: ${question.question}`));
+  }
+  return lines.join("\n");
+}
+
+function buildFleetPlan(
+  orchestration: Orchestration,
+  project: Project,
+  messages: OrchestrationMessage[],
+  workflow?: PersistedWorkflowGraph,
+): AgentFleetPlan {
   const decisions = selectedDecisionLines(messages);
   const maxAgents = Math.max(2, Math.min(10, orchestration.maxAgents));
   const desired = decisions.some((decision) => /dependency|package|upgrade/i.test(decision))
@@ -1043,7 +1877,7 @@ function buildFleetPlan(orchestration: Orchestration, project: Project, messages
       ],
     };
   });
-  return {
+  const plan: AgentFleetPlan = {
     orchestrationGoal: orchestration.goal,
     architectureSummary: `Modernize ${project.projectName} for "${oneLine(orchestration.goal, 100)}" using project-scoped agents working in ${project.repoPath}.`,
     agentCount: agents.length,
@@ -1058,6 +1892,7 @@ function buildFleetPlan(orchestration: Orchestration, project: Project, messages
     integrationStrategy: `Use isolated branches/worktrees for ${project.projectName}; start with repository discovery, then apply narrow modernization changes and run available validation commands.`,
     agents,
   };
+  return workflow ? withWorkflowSharedContext(plan, workflow.graph) : plan;
 }
 
 function selectedDecisionLines(messages: OrchestrationMessage[]): string[] {
@@ -1067,16 +1902,11 @@ function selectedDecisionLines(messages: OrchestrationMessage[]): string[] {
       const metadata = parseJson(message.metadataJson) as { kind?: string; selectedLabels?: string[]; customText?: string } | null;
       if (metadata?.selectedLabels?.length) return metadata.selectedLabels.join(", ");
       if (metadata?.customText && !isContinueText(metadata.customText)) return metadata.customText;
+      if ((metadata?.kind === "question_answer" || metadata?.kind === "question_message") && message.content && !isContinueText(message.content)) return message.content;
       if (metadata?.kind === "freeform") return message.content;
       return null;
     })
     .filter((value): value is string => typeof value === "string" && value.length > 0 && !isContinueText(value));
-}
-
-function isContinuePlanningRequest(message: OrchestrationMessage): boolean {
-  if (message.role !== "user") return false;
-  const metadata = parseJson(message.metadataJson) as { customText?: string } | null;
-  return isContinueText(metadata?.customText ?? message.content);
 }
 
 function isContinueText(value: string): boolean {
@@ -1150,6 +1980,23 @@ Rules:
 
 function orchestrationParentLabel(orchestration: Orchestration, project: Project | undefined, latestMessage: string): string {
   const plan = parseJson(orchestration.finalPlanJson) as AgentFleetPlan | null;
+  if (plan) {
+    return [
+      `Orchestration #${orchestration.id}`,
+      `Status: ${orchestration.status}`,
+      `Project: ${project?.projectName ?? orchestration.projectId}`,
+      `Goal: ${oneLine(orchestration.goal, 120)}`,
+      "",
+      `Plan: ${plan.agentCount} worker agents ready`,
+      `Architecture: ${oneLine(plan.architectureSummary, 180)}`,
+      `Integration: ${oneLine(plan.integrationStrategy, 180)}`,
+      "",
+      "Workers:",
+      ...plan.agents.slice(0, 10).map((agent, index) => `${index + 1}. ${agent.name} (${agent.role}) - ${oneLine(agent.objective, 120)}`),
+      "",
+      "Press Start Plan in this container to spawn the worker agents.",
+    ].join("\n");
+  }
   return [
     `Orchestration #${orchestration.id}`,
     `Status: ${orchestration.status}`,
@@ -1157,7 +2004,7 @@ function orchestrationParentLabel(orchestration: Orchestration, project: Project
     `Repo: ${project?.repoPath ?? "unknown"}`,
     `Remote: ${project?.remoteUrl ?? project?.remoteStatus ?? "unknown"}`,
     `Goal: ${oneLine(orchestration.goal, 110)}`,
-    plan ? `Plan: ${plan.agentCount} agents` : "Plan: in progress",
+    "Plan: in progress",
     "",
     oneLine(latestMessage, 180),
   ].join("\n");
@@ -1221,6 +2068,53 @@ function aggregateAgents(agents: Array<{ status: string; branchName: string | nu
     branches: agents.map((agent) => agent.branchName).filter(Boolean),
     prs: agents.map((agent) => agent.prUrl).filter(Boolean),
   };
+}
+
+function workflowView(workflow: PersistedWorkflowGraph): JsonRecord {
+  return {
+    id: workflow.id,
+    projectId: workflow.projectId,
+    orchestrationId: workflow.orchestrationId,
+    title: workflow.title,
+    revision: workflow.revision,
+    graph: workflow.graph,
+    createdAt: workflow.createdAt,
+    updatedAt: workflow.updatedAt,
+  };
+}
+
+function workflowPatchView(patch: PersistedWorkflowPatch): JsonRecord {
+  return {
+    id: patch.id,
+    graphId: patch.graphId,
+    projectId: patch.projectId,
+    orchestrationId: patch.orchestrationId,
+    baseRevision: patch.baseRevision,
+    resultingRevision: patch.resultingRevision,
+    patch: patch.patch,
+    source: patch.source,
+    reason: patch.reason,
+    createdAt: patch.createdAt,
+  };
+}
+
+function workflowPatchFromBody(body: JsonRecord): WorkflowPatch {
+  const candidate = body.patch && typeof body.patch === "object" && !Array.isArray(body.patch) ? body.patch : body;
+  return candidate as WorkflowPatch;
+}
+
+function writeWorkflowSse(res: ServerResponse, event: WorkflowEvent): void {
+  res.write(`id: ${event.id}\n`);
+  res.write(`event: ${event.type}\n`);
+  res.write(`data: ${JSON.stringify(event)}\n\n`);
+}
+
+function isStaleWorkflowError(message: string): boolean {
+  return /stale|baseRevision|revision .*does not match/i.test(message);
+}
+
+function isOrchestrationReadyForSpawn(orchestration: Pick<Orchestration, "status">): boolean {
+  return ["ready_for_approval", "READY_TO_ORCHESTRATE", "approved_for_spawn"].includes(orchestration.status);
 }
 
 function arrayOfStrings(value: unknown): string[] {

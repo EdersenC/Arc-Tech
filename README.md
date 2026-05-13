@@ -164,11 +164,80 @@ Click a task card to open the right-side detail drawer. The drawer loads `GET /a
 
 Excalidraw `/orchestrate` starts a project-scoped visual planning session instead of immediately spawning agents. The parent orchestration card opens a sidebar with the planner transcript, clickable poll-style options, freeform planner replies, final plan review, and a **Spawn Agents** control. Spawning requires explicit approval. When approved, the API creates real child implementation tasks through `ImplementService`, lays their cards out inside one bordered orchestration group in a 3-column grid, and stores parent/child links through task orchestration ids and card metadata. Clicking the outer orchestration card reopens the master plan/history; clicking a child card opens that agent task's normal history and follow-up chat.
 
+### Live Workflow Canvas v1
+
+Live workflow canvas v1 adds a model-owned `WorkflowGraph` to Excalidraw `/orchestrate`. The graph is the source of truth for goals, requirements, architecture decisions, components, risks, questions, milestones, and proposed agent tasks. Excalidraw is only the visual projection.
+
+Run it from a fresh checkout:
+
+```bash
+npm install
+cp .env.example .env
+npm run excalidraw
+```
+
+Open the Vite URL printed by `npm run excalidraw`, create or select an Excalidraw project, connect a repo remote if Direct Agent or Spawn Agents needs PR-backed work, then submit:
+
+```text
+/orchestrate ace multiplayer snake game
+```
+
+The server creates the parent orchestration and an initial project-scoped workflow graph. The browser subscribes to:
+
+```text
+GET /api/workflows/events?projectId=<activeProjectId>
+```
+
+and renders locked workflow boxes/arrows into the same canvas as task cards. The sidebar shows workflow stream state, current revision, and latest patch reason/status.
+
+Planner/model messages may include semantic workflow patches in this fenced format:
+
+````markdown
+```ARC_WORKFLOW_PATCH_JSON
+{
+  "id": "patch-replace-p2p-with-https-rev-0",
+  "graphId": "workflow-project-1-orchestration-12",
+  "baseRevision": 0,
+  "reason": "Replace P2P multiplayer with HTTPS.",
+  "author": "planner",
+  "createdAt": "2026-05-09T12:05:00.000Z",
+  "operations": [
+    {
+      "op": "add_node",
+      "node": {
+        "id": "component-https-api-server-orchestration-12",
+        "kind": "backend_component",
+        "status": "active",
+        "title": "HTTPS API server",
+        "summary": "Server endpoint layer for multiplayer operations.",
+        "createdAt": "2026-05-09T12:05:00.000Z",
+        "updatedAt": "2026-05-09T12:05:00.000Z"
+      }
+    }
+  ]
+}
+```
+````
+
+The server extracts the newest `ARC_WORKFLOW_PATCH_JSON` block, validates it, rejects raw Excalidraw JSON, checks `baseRevision`, applies it through `WorkflowService`, persists patch history, and emits `workflow.patch_applied` or `workflow.patch_rejected`.
+
+Important v1 rule: direct user canvas edits do not change workflow state. Moving or deleting workflow-owned Excalidraw elements is visual-only and is restored from the latest `WorkflowGraph` snapshot. User input changes the graph only by going through the planner/model. Task-card dragging still uses the existing card persistence path and does not mutate `WorkflowGraph`.
+
+Troubleshooting workflow streams:
+
+- Status shows `Workflow reconnecting`: the browser `EventSource` lost the SSE connection and is reconnecting automatically. Check that `npm run excalidraw` is still running and the active project id is valid.
+- Status shows `Workflow disconnected`: the EventSource closed. Reload the page or switch projects to create a new stream.
+- Patch rejected with a stale revision: the planner emitted a patch for an older `baseRevision`. Fetch the latest graph snapshot and regenerate the patch against the current revision.
+- Patch rejected as malformed: inspect the newest `ARC_WORKFLOW_PATCH_JSON` block; it must contain one complete JSON object and no markdown inside the block.
+- Canvas does not update: check the browser console for stream parse errors and the server log for `Workflow patch applied` or `Workflow patch rejected`.
+
+See `docs/demo-workflow-snake-game.md` for a manual end-to-end demo.
+
 The Excalidraw API intentionally does not log in to Discord and does not expose Discord tokens. Execution still flows through `ImplementService`, `TaskMessagePump`, `CodexRunner`, and `GitManager`; the canvas never runs shell commands directly.
 
 For compiled serving, `npm run build` writes the web bundle to `dist/web`; the Excalidraw API serves that directory when Vite is not in front of it.
 
-Current limitations: the Excalidraw planner loop uses structured stored planning state for the MVP; collaborative multi-user editing is not enabled, and task controls such as diff/merge/cancel remain in the existing Discord task UI for now.
+Current limitations: collaborative multi-user editing is not enabled, workflow event fanout is in-memory for v1, and task controls such as diff/merge/cancel remain in the existing Discord task UI for now.
 
 ## Project Git Remote
 
@@ -197,6 +266,8 @@ The bot keeps durable state in SQLite at `DATABASE_PATH`. The schema contains:
 - `orchestration_agents`: child agent rows linked to visible task threads, branches, worktrees, summaries, and optional PR URLs.
 - `orchestration_messages`: parent-thread planner conversation history.
 - `excalidraw_cards`: persisted visual cards, linked task ids, project ids, canvas position, label, branch, and status for the Excalidraw UI.
+- `workflow_graphs`: current authoritative `WorkflowGraph` snapshots scoped to a project and optional orchestration.
+- `workflow_patches`: append-only semantic `WorkflowPatch` history with base/resulting revisions and planner reasons.
 
 Project files live under `WORKSPACES_DIR/<guild>/<project-slug>-<channel-id>/` with a `repo/` base checkout and isolated task worktrees in `worktrees/task-<n>/`. Task branches use `codex/task-<n>`, where `<n>` is the project-local task number shown in Discord.
 
@@ -254,11 +325,13 @@ Bounds are clamped to a hard minimum of 2 and hard maximum of 10. Children auto-
 
 PR URLs are optional. With `GITHUB_PR_ENABLED=false`, tasks still commit locally and report branch/worktree paths. With GitHub PRs enabled and `gh` configured, the app can push task branches and create or update PRs. Missing GitHub integration does not fail an orchestration.
 
-Implementation agents can propose their own PR names by ending with `PR title: <short descriptive title>`. Orchestration planners can also include optional child-level `prTitle` values in the AgentFleetPlan. The TypeScript runner sanitizes these titles and still owns `gh pr create`/`gh pr edit`; Codex never receives GitHub control directly. If no title is proposed, the runner falls back to the task number plus a shortened command.
+Implementation agents can propose their own PR names with the optional `prTitle` field inside their final `ARC_AGENT_COMPLETION_JSON` block. Orchestration planners can also include optional child-level `prTitle` values in the AgentFleetPlan. The TypeScript runner sanitizes these titles and still owns `gh pr create`/`gh pr edit`; Codex never receives GitHub control directly. If no title is proposed, the runner falls back to the task number plus a shortened command.
 
 ## PR Feedback Worker
 
-When `GITHUB_PR_FEEDBACK_ENABLED=true`, the runner polls tracked open PRs created by agent tasks. The worker uses `gh api` to read PR issue comments, review summaries, and inline review comments. New feedback is deduped in SQLite, queued as a normal task follow-up, and the owning agent task is automatically enqueued.
+When `GITHUB_PR_FEEDBACK_ENABLED=true`, the runner polls tracked open PRs created by agent tasks. The default interval is 5 minutes and can be changed with `GITHUB_PR_FEEDBACK_POLL_MS`. The worker uses `gh api` to read PR issue comments, review summaries, and inline review comments. New feedback is deduped in SQLite, queued as a normal task follow-up, and the owning agent task is automatically enqueued.
+
+To avoid unbounded GitHub API polling, each PR pauses feedback polling after 1 hour without new feedback. Change that with `GITHUB_PR_FEEDBACK_IDLE_MS`. Resume paused polling and run an immediate check with `/check-prs` in Discord, `check prs` in a task or orchestration thread, or `POST /api/pr-feedback/check` with `{ "projectId": <id> }` in the Excalidraw server.
 
 The worker starts in both the Discord bot and the standalone Excalidraw server. It posts a short visibility update in the child task thread and parent orchestration thread when applicable. Excalidraw cards show PR feedback as `queued`, `resolving`, or `resolved` while the same task runner handles the follow-up. Codex receives only the task follow-up prompt in its existing worktree and branch; it does not receive Discord credentials and does not call Discord APIs.
 
@@ -358,8 +431,14 @@ After Codex finishes, the orchestrator runs the Git lifecycle path:
 - removes `.codex-tmp/`
 - commits any remaining uncommitted task changes
 - pushes the task branch when GitHub PR integration is enabled
-- creates or reuses a GitHub pull request with `gh` when available, using the agent-proposed PR title when provided
+- creates or reuses a GitHub pull request with `gh` when available, using a runner-staged title and body
 - posts the PR link in the task thread when one exists
+
+### PR Stager Trust Boundary
+
+Public GitHub PR bodies are generated by the runner, not copied from free-form Codex output. Implementation agents must return one structured `ARC_AGENT_COMPLETION_JSON` block with reviewer-facing summary, change, verification, risk, follow-up, and review-focus fields. The runner parses that JSON, derives changed-file facts from `git`, classifies the PR type, renders the public body, and publishes it through `gh --body-file`.
+
+The runner does not trust agent-provided changed-file lists, raw task prompts, workflow dumps, or local path details. A leak gate blocks PR creation or update if the staged title or body contains absolute local paths, `.arc-tech`, task worktree internals, Excalidraw workspace internals, `WorkflowGraph` dumps, detailed prompts, internal rules, or system/developer instruction text. Rendered graphs use repo-relative paths only, and comparison content is only included when structured baseline data exists.
 
 ## Live Progress
 

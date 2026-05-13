@@ -86,6 +86,35 @@ export class AppDatabase {
       );
       CREATE INDEX IF NOT EXISTS idx_orchestrations_project ON orchestrations(project_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_orchestrations_thread ON orchestrations(discord_thread_id);
+      CREATE TABLE IF NOT EXISTS workflow_graphs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        orchestration_id INTEGER REFERENCES orchestrations(id) ON DELETE SET NULL,
+        title TEXT NOT NULL,
+        graph_json TEXT NOT NULL,
+        revision INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_workflow_graphs_project ON workflow_graphs(project_id, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_workflow_graphs_orchestration ON workflow_graphs(orchestration_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_graphs_project_orchestration_unique
+        ON workflow_graphs(project_id, orchestration_id)
+        WHERE orchestration_id IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS workflow_patches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        graph_id INTEGER NOT NULL REFERENCES workflow_graphs(id) ON DELETE CASCADE,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        orchestration_id INTEGER REFERENCES orchestrations(id) ON DELETE SET NULL,
+        base_revision INTEGER NOT NULL,
+        resulting_revision INTEGER NOT NULL,
+        patch_json TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'planner',
+        reason TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_workflow_patches_graph ON workflow_patches(graph_id, resulting_revision);
+      CREATE INDEX IF NOT EXISTS idx_workflow_patches_project ON workflow_patches(project_id, created_at);
       CREATE TABLE IF NOT EXISTS orchestration_agents (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         orchestration_id INTEGER NOT NULL REFERENCES orchestrations(id) ON DELETE CASCADE,
@@ -215,6 +244,27 @@ export class AppDatabase {
       ["reaction_error", "TEXT"],
       ["reacted_at", "TEXT"],
     ]);
+    this.addColumns("tracked_pull_requests", [
+      ["last_feedback_at", "TEXT"],
+      ["polling_suspended_at", "TEXT"],
+      ["polling_suspended_reason", "TEXT"],
+    ]);
+    this.db.exec(`
+      UPDATE tracked_pull_requests
+      SET last_feedback_at = (
+        SELECT MAX(COALESCE(e.github_updated_at, e.github_created_at, e.created_at))
+        FROM pull_request_feedback_events e
+        WHERE e.tracked_pr_id = tracked_pull_requests.id
+      )
+      WHERE last_feedback_at IS NULL
+        AND EXISTS (
+          SELECT 1
+          FROM pull_request_feedback_events e
+          WHERE e.tracked_pr_id = tracked_pull_requests.id
+        );
+      CREATE INDEX IF NOT EXISTS idx_tracked_pull_requests_polling
+        ON tracked_pull_requests(state, polling_suspended_at, last_polled_at);
+    `);
   }
 
   private addColumns(table: string, columns: Array<[string, string]>): void {

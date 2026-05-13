@@ -9,5 +9,6 @@ export const commands = [
     .setName("orchestrate")
     .setDescription("Plan and launch a visible fleet of Codex implementation agents.")
     .addStringOption((option) => option.setName("msg").setDescription("Orchestration goal").setRequired(true)),
+  new SlashCommandBuilder().setName("check-prs").setDescription("Resume and immediately check PR feedback polling for this project."),
   new SlashCommandBuilder().setName("status").setDescription("Check whether the bot is online."),
 ].map((command) => command.toJSON());

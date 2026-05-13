@@ -1,3 +1,5 @@
+import type { ArcPersistedWorkflowGraph } from "./workflows/api";
+
 export type ArcCardMode =
   | "direct_agent"
   | "plan_card_only"
@@ -46,6 +48,8 @@ export interface ArcCardMetadata {
   agentRole?: string;
   goal?: string;
   planSummary?: string;
+  questionId?: string;
+  status?: string;
 }
 
 export interface ArcTaskProgress {
@@ -213,6 +217,33 @@ export interface ArcPlannerQuestion {
   options: ArcPlannerOption[];
 }
 
+export interface ArcPlannerQuestionAnswer {
+  selectedOptionIds: string[];
+  selectedLabels: string[];
+  customText?: string;
+  content: string;
+  createdAt: string;
+  source?: string;
+}
+
+export interface ArcPlannerQuestionMessage {
+  id: number;
+  role: "user" | "planner" | "system";
+  content: string;
+  createdAt: string;
+}
+
+export interface ArcPlannerQuestionView extends ArcPlannerQuestion {
+  source: "planner" | "workflow";
+  status: "open" | "answered" | "resolved" | "deprecated";
+  answer: ArcPlannerQuestionAnswer | null;
+  workflowNodeId?: string;
+  detail?: string;
+  recommendedOptionIds?: string[];
+  recommendationRationale?: string;
+  messages: ArcPlannerQuestionMessage[];
+}
+
 export interface ArcOrchestrationMessage {
   id: number;
   role: "user" | "planner" | "system";
@@ -224,8 +255,20 @@ export interface ArcOrchestrationMessage {
     selectedOptionIds?: string[];
     readySummary?: string;
     plan?: unknown;
+    workflow?: unknown;
+    workflowPatch?: ArcWorkflowPatchStatus;
+    plannerPrompt?: string;
   } | null;
   createdAt: string;
+}
+
+export interface ArcWorkflowPatchStatus {
+  status?: "none" | "applied" | "rejected" | string;
+  patchId?: string;
+  reason?: string;
+  baseRevision?: number;
+  resultingRevision?: number;
+  error?: string;
 }
 
 export interface ArcOrchestrationAgent {
@@ -266,6 +309,9 @@ export interface ArcOrchestration {
     agents?: Array<{ name?: string; role?: string; objective?: string; prompt?: string; acceptanceCriteria?: string[] }>;
   } | null;
   latestQuestion?: ArcPlannerQuestion | null;
+  questions?: ArcPlannerQuestionView[];
+  workflow?: ArcPersistedWorkflowGraph | null;
+  latestWorkflowPatch?: ArcWorkflowPatchStatus | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -277,6 +323,7 @@ export interface ArcOrchestrationView {
   parentCard: ArcCard | null;
   borderCard: ArcCard | null;
   childCards: ArcCard[];
+  questionCards?: ArcCard[];
   aggregate: {
     total: number;
     done: number;
@@ -318,7 +365,12 @@ export async function submitImplement(message: string, mode: ArcCardMode, projec
   return parseJsonResponse(response);
 }
 
-export async function submitOrchestrate(message: string, projectId: number, x: number, y: number): Promise<{ orchestration: ArcOrchestrationView; card: ArcCard }> {
+export async function submitOrchestrate(
+  message: string,
+  projectId: number,
+  x: number,
+  y: number,
+): Promise<{ orchestration: ArcOrchestrationView; card: ArcCard; workflow?: ArcPersistedWorkflowGraph }> {
   const response = await fetch("/api/orchestrate", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -349,6 +401,38 @@ export async function answerOrchestrationQuestion(
   return parseJsonResponse(response);
 }
 
+export async function sendOrchestrationQuestionMessage(
+  orchestrationId: number,
+  questionId: string,
+  payload: { content?: string; selectedOptionIds?: string[]; customText?: string },
+): Promise<ArcOrchestrationView> {
+  const response = await fetch(
+    `/api/orchestrations/${encodeURIComponent(String(orchestrationId))}/questions/${encodeURIComponent(questionId)}/messages`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  );
+  return parseJsonResponse(response);
+}
+
+export async function updateOrchestrationPlan(orchestrationId: number): Promise<ArcOrchestrationView> {
+  const response = await fetch(`/api/orchestrations/${encodeURIComponent(String(orchestrationId))}/plan/update`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+  });
+  return parseJsonResponse(response);
+}
+
+export async function remakeOrchestrationPlan(orchestrationId: number): Promise<ArcOrchestrationView> {
+  const response = await fetch(`/api/orchestrations/${encodeURIComponent(String(orchestrationId))}/plan/remake`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+  });
+  return parseJsonResponse(response);
+}
+
 export async function sendOrchestrationMessage(orchestrationId: number, content: string): Promise<ArcOrchestrationView> {
   const response = await fetch(`/api/orchestrations/${encodeURIComponent(String(orchestrationId))}/messages`, {
     method: "POST",
@@ -358,7 +442,11 @@ export async function sendOrchestrationMessage(orchestrationId: number, content:
   return parseJsonResponse(response);
 }
 
-export async function launchOrchestration(orchestrationId: number, x: number, y: number): Promise<{ orchestration: ArcOrchestrationView; cards: ArcCard[] }> {
+export async function launchOrchestration(
+  orchestrationId: number,
+  x: number,
+  y: number,
+): Promise<{ orchestration: ArcOrchestrationView; cards: ArcCard[]; requiresApproval?: boolean }> {
   const response = await fetch(`/api/orchestrations/${encodeURIComponent(String(orchestrationId))}/launch`, {
     method: "POST",
     headers: { "content-type": "application/json" },

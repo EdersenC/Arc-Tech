@@ -10,6 +10,7 @@ import { GitHubPRFeedbackService } from "./github/GitHubPRFeedbackService.js";
 import { GitHubPRService } from "./github/GitHubPRService.js";
 import { PullRequestFeedbackRepo } from "./github/PullRequestFeedbackRepo.js";
 import { PullRequestFeedbackWorker } from "./github/PullRequestFeedbackWorker.js";
+import { OrchestrationPlannerService } from "./orchestrations/OrchestrationPlannerService.js";
 import { OrchestrationAgentsRepo } from "./orchestrations/repos/OrchestrationAgentsRepo.js";
 import { OrchestrationMessagesRepo } from "./orchestrations/repos/OrchestrationMessagesRepo.js";
 import { OrchestrationsRepo } from "./orchestrations/repos/OrchestrationsRepo.js";
@@ -19,6 +20,7 @@ import { ProjectStore, TaskStore } from "./stores.js";
 import { TaskMessagePump } from "./taskMessagePump.js";
 import { ImplementService } from "./tasks/ImplementService.js";
 import { TaskService } from "./tasks/TaskService.js";
+import { WorkflowEventBus, WorkflowGraphRepo, WorkflowService } from "./workflows/index.js";
 
 dropSudoPrivilegesForLocalServer();
 
@@ -31,6 +33,9 @@ const orchestrations = new OrchestrationsRepo(database.db);
 const orchestrationAgents = new OrchestrationAgentsRepo(database.db);
 const orchestrationMessages = new OrchestrationMessagesRepo(database.db);
 const pullRequestFeedback = new PullRequestFeedbackRepo(database.db);
+const workflowGraphs = new WorkflowGraphRepo(database.db);
+const workflowService = new WorkflowService(workflowGraphs);
+const workflowEvents = new WorkflowEventBus();
 const git = new GitManager();
 const runner = new CodexCliRunner(config.codexBin);
 const client = new Client({ intents: [] });
@@ -41,8 +46,9 @@ const githubPrFeedback = new GitHubPRFeedbackService();
 const pump = new TaskMessagePump(client, projects, tasks, git, runner, router, progress, githubPr);
 const taskService = new TaskService(projects, tasks, git);
 const implementService = new ImplementService(projects, tasks, git, taskService, pump);
+const planner = new OrchestrationPlannerService(orchestrations, orchestrationMessages, projects, git, runner);
 const pullRequestFeedbackWorker = new PullRequestFeedbackWorker(
-  { enabled: config.githubPrFeedbackEnabled, pollMs: config.githubPrFeedbackPollMs },
+  { enabled: config.githubPrFeedbackEnabled, pollMs: config.githubPrFeedbackPollMs, idleMs: config.githubPrFeedbackIdleMs },
   client,
   tasks,
   orchestrations,
@@ -59,9 +65,13 @@ const server = new ExcalidrawApiServer({
   implementService,
   cards,
   feedback: pullRequestFeedback,
+  prFeedbackWorker: pullRequestFeedbackWorker,
   orchestrations,
   orchestrationAgents,
   orchestrationMessages,
+  planner,
+  workflows: workflowService,
+  workflowEvents,
 });
 
 pump.onTaskUpdated((task) => {

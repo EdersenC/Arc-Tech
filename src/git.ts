@@ -1,8 +1,10 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { execa } from "execa";
 import { taskLabel } from "./taskLabels.js";
 import type { Project, Task } from "./types.js";
+import type { GitDiffFacts, GitDiffFile } from "./pr-stager/Types.js";
 
 interface GitHubRepoRef {
   owner: string;
@@ -172,6 +174,22 @@ export class GitManager {
     return created.html_url;
   }
 
+  async getTaskPullRequestDiffFacts(task: Task, options: { baseBranch?: string } = {}): Promise<GitDiffFacts> {
+    const worktreePath = requireWorktree(task);
+    const baseBranch = task.baseBranch ?? options.baseBranch ?? "main";
+    const headBranch = task.taskBranch ?? "HEAD";
+    const range = `${baseBranch}...HEAD`;
+    const stat = (await this.gitOutput(["diff", "--stat", range], worktreePath, { allowFailure: true })).trim();
+    const nameStatus = await this.gitOutput(["diff", "--name-status", "--find-renames", range], worktreePath, { allowFailure: true });
+    const numstat = await this.gitOutput(["diff", "--numstat", range], worktreePath, { allowFailure: true });
+    return {
+      baseBranch,
+      headBranch,
+      stat,
+      files: mergeDiffFiles(parseNameStatus(nameStatus), parseNumstat(numstat)),
+    };
+  }
+
   async getDiffStat(task: Task): Promise<string> {
     const worktreePath = requireWorktree(task);
     await this.removeCodexTempDir(worktreePath);
@@ -288,9 +306,8 @@ export class GitManager {
   }
 
   private async updatePullRequest(repo: GitHubRepoRef, number: number, title: string, body: string, cwd: string): Promise<void> {
-    await this.ghApiJson<GitHubPullRequestResponse>(`repos/${repo.owner}/${repo.repo}/pulls/${number}`, cwd, {
-      method: "PATCH",
-      fields: { title, body },
+    await withTempBodyFile(body, async (bodyFile) => {
+      await this.gh(["pr", "edit", String(number), "--title", title, "--body-file", bodyFile], cwd);
     });
   }
 
@@ -302,14 +319,29 @@ export class GitManager {
     body: string,
     cwd: string,
   ): Promise<GitHubPullRequestResponse> {
-    return this.ghApiJson<GitHubPullRequestResponse>(`repos/${repo.owner}/${repo.repo}/pulls`, cwd, {
-      method: "POST",
-      fields: {
-        title,
-        body,
-        base: baseBranch,
-        head: `${repo.owner}:${taskBranch}`,
-      },
+    return withTempBodyFile(body, async (bodyFile) => {
+      const result = await this.gh(
+        [
+          "pr",
+          "create",
+          "--base",
+          baseBranch,
+          "--head",
+          `${repo.owner}:${taskBranch}`,
+          "--title",
+          title,
+          "--body-file",
+          bodyFile,
+          "--json",
+          "number,url",
+        ],
+        cwd,
+      );
+      const parsed = JSON.parse(String(result.stdout || "{}")) as { number?: number; url?: string };
+      if (!parsed.number) {
+        throw new Error(`gh pr create did not return a PR number: ${String(result.stdout ?? "")}`);
+      }
+      return { number: parsed.number, html_url: parsed.url ?? null };
     });
   }
 
@@ -349,6 +381,79 @@ export class GitManager {
 
   private async removeCodexTempDir(worktreePath: string): Promise<void> {
     await fs.rm(path.join(worktreePath, ".codex-tmp"), { recursive: true, force: true });
+  }
+}
+
+export function parseNameStatus(output: string): Array<Pick<GitDiffFile, "path" | "status">> {
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const parts = line.split(/\t+/);
+      const status = parts[0] ?? "M";
+      const path = parts.length >= 3 ? parts[2] : parts[1] ?? "";
+      return { status: normalizeGitStatus(status), path };
+    })
+    .filter((file) => Boolean(file.path));
+}
+
+export function parseNumstat(output: string): Map<string, Pick<GitDiffFile, "additions" | "deletions">> {
+  const stats = new Map<string, Pick<GitDiffFile, "additions" | "deletions">>();
+  for (const line of output.split(/\r?\n/)) {
+    const parts = line.trim().split(/\t+/);
+    if (parts.length < 3) continue;
+    const additions = parts[0] === "-" ? null : Number(parts[0]);
+    const deletions = parts[1] === "-" ? null : Number(parts[1]);
+    const filePath = normalizeNumstatPath(parts[parts.length - 1] ?? "");
+    if (filePath) {
+      stats.set(filePath, {
+        additions: Number.isFinite(additions) ? additions : null,
+        deletions: Number.isFinite(deletions) ? deletions : null,
+      });
+    }
+  }
+  return stats;
+}
+
+function normalizeNumstatPath(filePath: string): string {
+  const trimmed = filePath.trim();
+  if (!trimmed.includes("=>")) return trimmed;
+
+  const braceNormalized = trimmed.replace(/\{([^{}]*?)\s*=>\s*([^{}]*?)\}/g, "$2");
+  if (!braceNormalized.includes("=>")) return braceNormalized.trim();
+
+  return braceNormalized.split("=>").at(-1)?.trim() ?? "";
+}
+
+function mergeDiffFiles(
+  files: Array<Pick<GitDiffFile, "path" | "status">>,
+  stats: Map<string, Pick<GitDiffFile, "additions" | "deletions">>,
+): GitDiffFile[] {
+  return files.map((file) => {
+    const stat = stats.get(file.path) ?? { additions: null, deletions: null };
+    return { ...file, ...stat };
+  });
+}
+
+function normalizeGitStatus(status: string): string {
+  const first = status.charAt(0).toUpperCase();
+  if (first === "A") return "added";
+  if (first === "M") return "modified";
+  if (first === "D") return "deleted";
+  if (first === "R") return "renamed";
+  if (first === "C") return "copied";
+  return "changed";
+}
+
+async function withTempBodyFile<T>(body: string, fn: (bodyFile: string) => Promise<T>): Promise<T> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "arc-pr-body-"));
+  const bodyFile = path.join(dir, "body.md");
+  try {
+    await fs.writeFile(bodyFile, body, "utf8");
+    return await fn(bodyFile);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
   }
 }
 
