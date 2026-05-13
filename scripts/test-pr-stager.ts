@@ -64,13 +64,14 @@ function testParser(): void {
 
 function testGitFixtureParsing(): void {
   const files = parseNameStatus("A\tsrc/new.ts\nM\tREADME.md\nR100\tsrc/old.ts\tsrc/new-name.ts\n");
-  const stats = parseNumstat("10\t0\tsrc/new.ts\n2\t1\tREADME.md\n5\t3\tsrc/new-name.ts\n");
+  const stats = parseNumstat("10\t0\tsrc/new.ts\n2\t1\tREADME.md\n5\t3\tsrc/new-name.ts\n4\t2\tsrc/{old-name.ts => renamed-name.ts}\n");
   assert.deepEqual(files, [
     { status: "added", path: "src/new.ts" },
     { status: "modified", path: "README.md" },
     { status: "renamed", path: "src/new-name.ts" },
   ]);
   assert.deepEqual(stats.get("src/new-name.ts"), { additions: 5, deletions: 3 });
+  assert.deepEqual(stats.get("src/renamed-name.ts"), { additions: 4, deletions: 2 });
 }
 
 function testClassifier(): void {

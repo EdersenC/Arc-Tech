@@ -79,10 +79,10 @@ export class OrchestrationPlannerService {
     const validation = this.validator.validateForOrchestration(raw, orchestration);
     if (validation.ok && validation.json) {
       this.orchestrations.updateFinalPlan(orchestrationId, validation.json);
-      this.messages.create(orchestrationId, "planner", validation.json, { metadata: { fleetPlan: true, ...(metadataRecord(options.metadata)) } });
+      this.messages.create(orchestrationId, "planner", validation.json, { metadata: { ...metadataRecord(options.metadata), fleetPlan: true } });
       return { raw, validJson: validation.json, errors: [] };
     }
-    this.messages.create(orchestrationId, "planner", raw, { metadata: { invalidFleetPlan: true, errors: validation.errors, ...(metadataRecord(options.metadata)) } });
+    this.messages.create(orchestrationId, "planner", raw, { metadata: { ...metadataRecord(options.metadata), invalidFleetPlan: true, errors: validation.errors } });
     return { raw, errors: validation.errors };
   }
 

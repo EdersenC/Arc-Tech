@@ -201,7 +201,20 @@ Planner/model messages may include semantic workflow patches in this fenced form
   "reason": "Replace P2P multiplayer with HTTPS.",
   "author": "planner",
   "createdAt": "2026-05-09T12:05:00.000Z",
-  "operations": []
+  "operations": [
+    {
+      "op": "add_node",
+      "node": {
+        "id": "component-https-api-server-orchestration-12",
+        "kind": "backend_component",
+        "status": "active",
+        "title": "HTTPS API server",
+        "summary": "Server endpoint layer for multiplayer operations.",
+        "createdAt": "2026-05-09T12:05:00.000Z",
+        "updatedAt": "2026-05-09T12:05:00.000Z"
+      }
+    }
+  ]
 }
 ```
 ````
@@ -312,7 +325,7 @@ Bounds are clamped to a hard minimum of 2 and hard maximum of 10. Children auto-
 
 PR URLs are optional. With `GITHUB_PR_ENABLED=false`, tasks still commit locally and report branch/worktree paths. With GitHub PRs enabled and `gh` configured, the app can push task branches and create or update PRs. Missing GitHub integration does not fail an orchestration.
 
-Implementation agents can propose their own PR names by ending with `PR title: <short descriptive title>`. Orchestration planners can also include optional child-level `prTitle` values in the AgentFleetPlan. The TypeScript runner sanitizes these titles and still owns `gh pr create`/`gh pr edit`; Codex never receives GitHub control directly. If no title is proposed, the runner falls back to the task number plus a shortened command.
+Implementation agents can propose their own PR names with the optional `prTitle` field inside their final `ARC_AGENT_COMPLETION_JSON` block. Orchestration planners can also include optional child-level `prTitle` values in the AgentFleetPlan. The TypeScript runner sanitizes these titles and still owns `gh pr create`/`gh pr edit`; Codex never receives GitHub control directly. If no title is proposed, the runner falls back to the task number plus a shortened command.
 
 ## PR Feedback Worker
 

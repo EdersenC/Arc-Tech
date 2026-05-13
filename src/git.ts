@@ -405,7 +405,7 @@ export function parseNumstat(output: string): Map<string, Pick<GitDiffFile, "add
     if (parts.length < 3) continue;
     const additions = parts[0] === "-" ? null : Number(parts[0]);
     const deletions = parts[1] === "-" ? null : Number(parts[1]);
-    const filePath = parts[parts.length - 1] ?? "";
+    const filePath = normalizeNumstatPath(parts[parts.length - 1] ?? "");
     if (filePath) {
       stats.set(filePath, {
         additions: Number.isFinite(additions) ? additions : null,
@@ -414,6 +414,16 @@ export function parseNumstat(output: string): Map<string, Pick<GitDiffFile, "add
     }
   }
   return stats;
+}
+
+function normalizeNumstatPath(filePath: string): string {
+  const trimmed = filePath.trim();
+  if (!trimmed.includes("=>")) return trimmed;
+
+  const braceNormalized = trimmed.replace(/\{([^{}]*?)\s*=>\s*([^{}]*?)\}/g, "$2");
+  if (!braceNormalized.includes("=>")) return braceNormalized.trim();
+
+  return braceNormalized.split("=>").at(-1)?.trim() ?? "";
 }
 
 function mergeDiffFiles(

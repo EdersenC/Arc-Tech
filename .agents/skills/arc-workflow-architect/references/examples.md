@@ -290,7 +290,20 @@ Raw Excalidraw scene data is rejected:
   "baseRevision": 2,
   "reason": "Move a card",
   "createdAt": "2026-05-09T12:20:00.000Z",
-  "operations": [],
+  "operations": [
+    {
+      "op": "add_node",
+      "node": {
+        "id": "note-raw-canvas-example",
+        "kind": "constraint",
+        "status": "active",
+        "title": "Raw canvas update",
+        "summary": "Invalid example that includes forbidden Excalidraw scene data.",
+        "createdAt": "2026-05-09T12:20:00.000Z",
+        "updatedAt": "2026-05-09T12:20:00.000Z"
+      }
+    }
+  ],
   "elements": [{ "type": "rectangle", "x": 10, "y": 20, "width": 100, "height": 80 }]
 }
 ```
@@ -305,7 +318,20 @@ Missing `baseRevision` is rejected unless the patch creates a graph:
   "graphId": "workflow-project-1-orchestration-12",
   "reason": "Add API server",
   "createdAt": "2026-05-09T12:25:00.000Z",
-  "operations": []
+  "operations": [
+    {
+      "op": "add_node",
+      "node": {
+        "id": "component-api-server-orchestration-12",
+        "kind": "backend_component",
+        "status": "active",
+        "title": "API server",
+        "summary": "Server boundary for orchestration operations.",
+        "createdAt": "2026-05-09T12:25:00.000Z",
+        "updatedAt": "2026-05-09T12:25:00.000Z"
+      }
+    }
+  ]
 }
 ```
 

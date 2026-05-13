@@ -71,6 +71,19 @@ Planner block format:
   "reason": "Short semantic reason.",
   "author": "planner",
   "createdAt": "2026-05-09T12:00:00.000Z",
-  "operations": []
+  "operations": [
+    {
+      "op": "add_node",
+      "node": {
+        "id": "decision-api-shape-orchestration-9",
+        "kind": "architecture",
+        "status": "active",
+        "title": "Define API shape",
+        "summary": "Capture the selected API contract before implementation tasks start.",
+        "createdAt": "2026-05-09T12:00:00.000Z",
+        "updatedAt": "2026-05-09T12:00:00.000Z"
+      }
+    }
+  ]
 }
 ```

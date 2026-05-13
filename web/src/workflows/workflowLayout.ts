@@ -72,7 +72,7 @@ export function layoutWorkflowGraph(graph: ArcWorkflowGraph, options: WorkflowLa
   let currentX = base.x;
 
   lanes.forEach((laneNodes, lane) => {
-    const sectionId = stableSectionId(lane);
+    const sectionId = sectionIdForLane(lane, laneNodes, hintByNodeId);
     let currentY = base.y + SECTION_PAD + SECTION_TITLE_HEIGHT;
     let maxHeight = SECTION_PAD + SECTION_TITLE_HEIGHT;
     laneNodes.forEach((node, index) => {
@@ -85,7 +85,7 @@ export function layoutWorkflowGraph(graph: ArcWorkflowGraph, options: WorkflowLa
         width: NODE_WIDTH,
         height,
         lane,
-        sectionId: hint?.sectionId ?? sectionId,
+        sectionId,
         order: hint?.order ?? index,
       };
       nodes.set(node.id, layout);
@@ -104,6 +104,14 @@ export function layoutWorkflowGraph(graph: ArcWorkflowGraph, options: WorkflowLa
   });
 
   return { nodes, sections };
+}
+
+function sectionIdForLane(lane: string, nodes: ArcWorkflowNode[], hintByNodeId: Map<string, ArcWorkflowLayoutHint>): string {
+  for (const node of nodes) {
+    const hintedSectionId = hintByNodeId.get(node.id)?.sectionId;
+    if (hintedSectionId) return hintedSectionId;
+  }
+  return stableSectionId(lane);
 }
 
 function groupedNodes(nodes: ArcWorkflowNode[], hintByNodeId: Map<string, ArcWorkflowLayoutHint>): Map<string, ArcWorkflowNode[]> {

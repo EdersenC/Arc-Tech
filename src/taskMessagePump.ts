@@ -160,7 +160,7 @@ export class TaskMessagePump {
             if (diffStat !== "No file changes.") {
               const recoverySummary =
                 "Codex hit a sandboxed Git metadata write while trying to commit or push, but the orchestrator committed the file changes outside the sandbox.";
-              const pullRequestUrl = await this.createPullRequestIfPossible(task, recoverySummary, diffStat);
+              const pullRequestUrl = await this.createPullRequestIfPossible(task, buildRecoveryPrCompletion(recoverySummary), diffStat);
               const retainedPullRequestUrl = pullRequestUrl ?? task.pullRequestUrl ?? task.prUrl;
               const completionSummary = buildCompletionSummary(recoverySummary, retainedPullRequestUrl);
               this.tasks.updateMessagesStatus(queued.map((queuedMessage) => queuedMessage.id), "processed");
@@ -333,6 +333,29 @@ function buildCompletionSummary(agentSummary: string, pullRequestUrl: string | n
   ]
     .filter(Boolean)
     .join("\n\n");
+}
+
+function buildRecoveryPrCompletion(summary: string): string {
+  return `${summary}
+
+\`\`\`ARC_AGENT_COMPLETION_JSON
+{
+  "summary": [
+    "Recovered committed task changes after a sandboxed Git metadata write blocked normal completion."
+  ],
+  "changes": [
+    "The runner committed the task worktree changes outside the Codex sandbox."
+  ],
+  "verification": [],
+  "risks": [
+    "Review the committed diff carefully because normal Codex completion was interrupted by Git metadata access."
+  ],
+  "followUps": [],
+  "reviewFocus": [
+    "Confirm the committed diff matches the intended task changes."
+  ]
+}
+\`\`\``;
 }
 
 function sanitizeAgentSummary(summary: string): string {
